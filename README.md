@@ -227,4 +227,4 @@ Inspired in README shape by [thebkht/smart-parking-system](https://github.com/th
 
 ## License
 
-TBD by the founder. Do not publish adapters that imply rights we do not have.
+TBD by the founders. Do not publish adapters that imply rights we do not have.
