@@ -228,3 +228,8 @@ Inspired in README shape by [thebkht/smart-parking-system](https://github.com/th
 ## License
 
 TBD by the founders. Do not publish adapters that imply rights we do not have.
+
+Founders 
+Dayspring Idahosa
+Benjamin Nukunu Davis
+Daniel Kilgore
