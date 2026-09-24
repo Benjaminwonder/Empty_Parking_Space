@@ -1,0 +1,115 @@
+package parkfind;
+
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Random;
+
+
+
+
+
+/*
+ * Practice lot server for the Stetson parking project
+ * One lot with 120 spots that are separated into 3 groups. Near, mid and far with 40 in each
+ *  Web page has a small API the page uses to get spot status
+ *  
+ *HOW TO RUN IT:
+ *Run project in Eclipse 
+ *Open http://localhost:8080 in your browser
+ * 
+ *The spot status is just sample data until the live data gets implemented
+*/
+
+
+public class WebPage {
+static final String[] ZONES = {"Near", "Mid", "Far"};
+static final double[] FILL = {.85, .60, .30}; // near is packed, far is mostly empty
+static final boolean[][] TAKEN = new boolean[3][41]; //[zone] [spot 1-40]
+static String lastUpdated;
+
+static final String Head = """
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Practice Lot</title>
+	<style>
+		body { font-family: Arial, sans-serif; background: #f2f4f0;}
+		.lot { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+		.spot { height: 50px; text-align: center; border: 1px solid #333; }
+		.free {background: lightgreen;}
+		.taken { background: gray;}
+		.ada {background: lightblue;}
+		.ev {background: gold}
+	</style>
+</head>
+<body>
+<main>
+		""";
+static String type(int zone, int n) {
+	if (zone == 0 && n<=5) return "ada";
+	if (zone == 0 && n<=9) return "ev";
+	if (zone == 1 && n<=4) return "ev";
+	return "std";
+}
+static String page() {
+	StringBuilder sb = new StringBuilder(Head);
+	sb.append("<h1>Practice Lot</h1>");
+	sb.append("<p>Last updated " + lastUpdated + "</p>");
+
+	for (int z = 0; z < 3; z++) {
+		sb.append("<h2>" + ZONES[z]+ "</h2>");
+		sb.append("<div class=\"lot\">");
+		
+  		for (int n = 1; n <= 40; n++) {
+			String status = TAKEN[z][n] ? "taken" : "free";
+			String kind = type (z,n);
+			
+			String css = "spot " + status;
+			if (!kind.equals("std")) {
+				css = css + " " + kind;
+			}
+			
+			sb.append("<div class=\""+ css + "\">" + n);
+			if (kind.equals("ada")) sb.append("<br>ADA");
+			if (kind.equals("ev")) sb.append("<br>EV");
+					sb.append("</div>");
+			}
+			sb.append("</div>");
+	}
+		sb.append("</main></body></html>");
+		return sb.toString();
+}
+
+
+public static void main(String[] args) throws Exception {
+	Random rng = new Random();
+	for (int z = 0; z < 3; z++) {
+		for (int n = 1; n <= 40; n++) {
+			TAKEN[z][n]= rng.nextDouble() < FILL[z];
+		}
+	}
+	lastUpdated = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMM d, h:mm:ss a"));
+	
+	HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
+	server .createContext("/", ex -> {
+		byte[] body = page().getBytes(StandardCharsets.UTF_8);
+		ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+		ex.sendResponseHeaders(200, body.length);
+		ex.getResponseBody().write(body);
+		ex.close();
+});
+server.start();
+	System.out.println("Practice lot running at http://localhost:8080");
+}
+}
+
+
+
+
+
+
+
+
