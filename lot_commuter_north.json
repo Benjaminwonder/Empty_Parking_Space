@@ -1,0 +1,13 @@
+{
+  "about": "L0: the one lot layout. sim.py, last-seen, guidance and the page all read this file; nobody copies it into code. Row 1 of each zone is nearest the entrance.",
+  "lot_id": "commuter_north",
+  "zones": [
+    {"zone_id": "near", "fill_priority": 1, "rows": ["N1", "N2", "N3", "N4"], "stalls_per_row": 10},
+    {"zone_id": "mid",  "fill_priority": 2, "rows": ["M1", "M2", "M3", "M4"], "stalls_per_row": 10},
+    {"zone_id": "far",  "fill_priority": 3, "rows": ["F1", "F2", "F3", "F4"], "stalls_per_row": 10}
+  ],
+  "special_stalls": {
+    "ada": ["N1-01", "N1-02", "N1-03", "N1-04", "N1-05"],
+    "ev":  ["N1-06", "N1-07", "N1-08", "N1-09", "M1-01", "M1-02", "M1-03", "M1-04"]
+  }
+}
