@@ -1,114 +1,278 @@
 package parkfind;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+
+import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
-import java.util.Random;
 
-
-
-
-
-/*
- * Practice lot server for the Stetson parking project
- * One lot with 120 spots that are separated into 3 groups. Near, mid and far with 40 in each
- *  Web page has a small API the page uses to get spot status
- *  
- *HOW TO RUN IT:
- *Run project in Eclipse 
- *Open http://localhost:8080 in your browser
- * 
- *The spot status is just sample data until the live data gets implemented
-*/
-
+// this is my parking project page. its all one file because its easier
+// for me to keep track of than a bunch of separate files right now
 
 public class WebPage {
-static final String[] ZONES = {"Near", "Mid", "Far"};
-static final double[] FILL = {.85, .60, .30}; // near is packed, far is mostly empty
-static final boolean[][] TAKEN = new boolean[3][41]; //[zone] [spot 1-40]
-static String lastUpdated;
 
-static final String Head = """
+	// the port number the server runs on. i just picked 8080, if it says
+	// "address already in use" change this number and try again, it is currently at 8085.
+	static int myPort = 8085;
+
+	// i copy pasted my html file in here between the triple quotes
+	static String PAGE = """
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-	<title>Practice Lot</title>
-	<style>
-		body { font-family: Arial, sans-serif; background: #f2f4f0;}
-		.lot { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
-		.spot { height: 50px; text-align: center; border: 1px solid #333; }
-		.free {background: lightgreen;}
-		.taken { background: gray;}
-		.ada {background: lightblue;}
-		.ev {background: gold}
-	</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ParkFind - Campus Map</title>
+<style>
+  :root {
+    --green:#1e8e3e; --green-dark:#0f5c26; --yellow:#e0a800; --red:#d33; --gray:#6b7280;
+    --ink:#1c1c1e; --muted:#6b6f76; --line:#dcdfe3; --bg:#f4f6f5; --card:#ffffff;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--ink); background:var(--bg); }
+
+  /* ---------- top bar (map screen) ---------- */
+  .topbar { display:flex; align-items:center; gap:14px; padding:12px 16px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .search { flex:1; min-width:220px; display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:20px; padding:8px 14px; color:var(--muted); }
+  .search input { border:none; outline:none; flex:1; font-size:14px; }
+  .updated { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); white-space:nowrap; }
+  .updated .dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
+  .refresh { cursor:pointer; border:none; background:none; font-size:16px; color:var(--muted); }
+
+  .filters { display:flex; gap:8px; padding:10px 16px; overflow-x:auto; background:#fff; border-bottom:1px solid var(--line); }
+  .chip { border:1px solid var(--line); background:#fff; border-radius:16px; padding:6px 14px; font-size:13px; white-space:nowrap; cursor:pointer; color:var(--ink); }
+  .chip.active { background:var(--green-dark); color:#fff; border-color:var(--green-dark); }
+
+  /* ---------- map ---------- */
+  .map-wrap { position:relative; max-width:1000px; height:640px; margin:0 auto; background:#eef3ec; overflow:hidden; }
+  .field { position:absolute; background:#c8e6c9; }
+  .track { position:absolute; border:10px solid #d99; border-radius:50%; background:transparent; }
+  .path { position:absolute; background:#e3e6e0; }
+  .bldg { position:absolute; background:#c9ccd1; border-radius:4px; display:flex; align-items:center; justify-content:center; text-align:center; font-size:12px; font-weight:600; color:#3c3f44; padding:4px; }
+  .bldg small { display:block; font-weight:400; font-size:10px; color:#6b6f76; }
+
+  .pin { position:absolute; transform:translate(-50%, -100%); display:flex; flex-direction:column; align-items:center; cursor:pointer; }
+  .pin .badge { display:flex; align-items:center; gap:5px; background:#fff; border:2px solid var(--green); color:var(--green); border-radius:16px; padding:3px 10px; font-weight:700; font-size:13px; box-shadow:0 1px 4px rgba(0,0,0,.15); }
+  .pin.filling .badge { border-color:var(--yellow); color:var(--yellow); }
+  .pin.full .badge { border-color:var(--red); color:var(--red); }
+  .pin.unknown .badge { border-color:var(--gray); color:var(--gray); }
+  .pin .stem { width:2px; height:10px; background:currentColor; opacity:.5; }
+  .pin .label { font-size:10px; color:var(--muted); margin-top:2px; background:rgba(255,255,255,.85); padding:0 3px; border-radius:3px; }
+
+  /* one little square under each pin, colored the same as its status */
+  .mini-spot { width:10px; height:10px; border-radius:2px; margin-top:3px; background:var(--green); }
+  .mini-spot.filling { background:var(--yellow); }
+  .mini-spot.full { background:var(--red); }
+  .mini-spot.unknown { background:var(--gray); }
+
+  .zoom { position:absolute; right:14px; bottom:60px; display:flex; flex-direction:column; gap:6px; }
+  .zoom button, .locate { width:34px; height:34px; border-radius:6px; border:1px solid var(--line); background:#fff; font-size:16px; cursor:pointer; }
+  .locate { position:absolute; right:14px; bottom:14px; }
+
+  .legend { display:flex; gap:18px; align-items:center; padding:10px 16px; background:#fff; border-top:1px solid var(--line); font-size:13px; color:var(--muted); flex-wrap:wrap; }
+  .legend span { display:flex; align-items:center; gap:6px; }
+  .legend i { width:10px; height:10px; border-radius:50%; display:inline-block; }
+  .i-green{background:var(--green)} .i-yellow{background:var(--yellow)} .i-red{background:var(--red)} .i-gray{background:var(--gray)}
+
+  /* ---------- navigation screen ---------- */
+  #nav { display:none; background:#fff; min-height:100vh; }
+  .nav-top { display:flex; align-items:center; gap:14px; padding:16px; border-bottom:1px solid var(--line); }
+  .back { border:none; background:none; font-size:20px; cursor:pointer; }
+  .nav-title { font-weight:700; font-size:16px; }
+  .nav-info { display:flex; align-items:center; gap:14px; padding:16px; }
+  .walk-icon { font-size:26px; }
+  .nav-time { font-weight:700; font-size:17px; }
+  .nav-sub { color:var(--muted); font-size:13px; }
+  .nav-map { position:relative; height:380px; background:#dfeadd; margin:0 16px; border-radius:10px; overflow:hidden; }
+  .nav-bldg { position:absolute; background:#c9ccd1; border-radius:4px; font-size:11px; font-weight:600; color:#3c3f44; display:flex; align-items:center; justify-content:center; text-align:center; padding:4px; }
+  .route { position:absolute; }
+  .dest-pin { position:absolute; transform:translate(-50%,-100%); display:flex; flex-direction:column; align-items:center; }
+  .dest-pin .badge { background:var(--green); color:#fff; border-radius:16px; padding:3px 10px; font-weight:700; font-size:13px; }
+  .here-dot { position:absolute; width:14px; height:14px; border-radius:50%; background:#2f6fed; border:3px solid #fff; box-shadow:0 0 0 2px #2f6fed; transform:translate(-50%,-50%); }
+  .here-label { position:absolute; font-size:12px; font-weight:600; color:#2f6fed; background:rgba(255,255,255,.9); padding:1px 6px; border-radius:4px; }
+  .start-btn { position:fixed; left:16px; right:16px; bottom:16px; background:var(--green-dark); color:#fff; border:none; border-radius:12px; padding:16px; font-size:16px; font-weight:600; cursor:pointer; }
+
+  @media (max-width:600px){ .map-wrap{height:520px;} }
+</style>
 </head>
 <body>
-<main>
-		""";
-static String type(int zone, int n) {
-	if (zone == 0 && n<=5) return "ada";
-	if (zone == 0 && n<=9) return "ev";
-	if (zone == 1 && n<=4) return "ev";
-	return "std";
-}
-static String page() {
-	StringBuilder sb = new StringBuilder(Head);
-	sb.append("<h1>Practice Lot</h1>");
-	sb.append("<p>Last updated " + lastUpdated + "</p>");
 
-	for (int z = 0; z < 3; z++) {
-		sb.append("<h2>" + ZONES[z]+ "</h2>");
-		sb.append("<div class=\"lot\">");
-		
-  		for (int n = 1; n <= 40; n++) {
-			String status = TAKEN[z][n] ? "taken" : "free";
-			String kind = type (z,n);
-			
-			String css = "spot " + status;
-			if (!kind.equals("std")) {
-				css = css + " " + kind;
-			}
-			
-			sb.append("<div class=\""+ css + "\">" + n);
-			if (kind.equals("ada")) sb.append("<br>ADA");
-			if (kind.equals("ev")) sb.append("<br>EV");
-					sb.append("</div>");
-			}
-			sb.append("</div>");
+<!-- ================= MAP SCREEN ================= -->
+<div id="mapScreen">
+  <div class="topbar">
+    <div class="search">🔍 <input placeholder="Search building, lot, or destination (e.g. Library)"></div>
+    <div class="updated"><span class="dot"></span> <span id="updatedText">Last updated: --</span>
+      <button class="refresh" onclick="refresh()">⟳</button>
+    </div>
+  </div>
+
+  <div class="filters">
+    <div class="chip active">All Lots</div>
+    <div class="chip">Near Me</div>
+    <div class="chip">Student</div>
+    <div class="chip">Faculty/Staff</div>
+    <div class="chip">Visitor</div>
+    <div class="chip">ADA</div>
+    <div class="chip">EV Charging</div>
+  </div>
+
+  <div class="map-wrap">
+    <div class="track" style="left:20px; top:60px; width:140px; height:100px;"></div>
+    <div class="bldg" style="left:170px; top:90px; width:110px; height:60px;">Sage Hall<small>Gym</small></div>
+    <div class="bldg" style="left:170px; top:190px; width:100px; height:55px;">Library</div>
+    <div class="bldg" style="left:300px; top:150px; width:70px; height:55px;">CUB</div>
+    <div class="bldg" style="left:400px; top:60px; width:130px; height:80px;">Hollis Center</div>
+    <div class="bldg" style="left:400px; top:230px; width:130px; height:110px;">Stetson Hall</div>
+
+    <div id="pins"></div>
+
+    <div class="zoom"><button onclick="return false">+</button><button onclick="return false">−</button></div>
+    <div class="locate">◎</div>
+  </div>
+
+  <div class="legend">
+    <span><i class="i-green"></i>Available</span>
+    <span><i class="i-yellow"></i>Filling Up</span>
+    <span><i class="i-red"></i>Full</span>
+    <span><i class="i-gray"></i>Unknown</span>
+  </div>
+</div>
+
+<!-- ================= NAVIGATION SCREEN ================= -->
+<div id="nav">
+  <div class="nav-top">
+    <button class="back" onclick="showMap()">←</button>
+    <div class="nav-title">Navigate to Spot <span id="navLotName"></span></div>
+  </div>
+  <div class="nav-info">
+    <div class="walk-icon">🚶</div>
+    <div>
+      <div class="nav-time" id="navTime">2 min (450 ft)</div>
+      <div class="nav-sub">From your current location</div>
+    </div>
+  </div>
+  <div class="nav-map">
+    <div class="nav-bldg" style="left:180px; top:30px; width:120px; height:55px;">Sage Hall<br><small>Gym</small></div>
+    <div class="nav-bldg" style="left:220px; top:150px; width:110px; height:55px;">Library</div>
+    <svg class="route" width="260" height="220" style="left:40px; top:60px;">
+      <polyline points="20,20 20,90 120,90 120,190" fill="none" stroke="#2f6fed" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="20" cy="20" r="6" fill="#fff" stroke="#1e8e3e" stroke-width="3"/>
+    </svg>
+    <div class="dest-pin" style="left:60px; top:80px;"><div class="badge" id="destBadge">A1</div></div>
+    <div class="here-dot" style="left:160px; top:250px;"></div>
+    <div class="here-label" style="left:130px; top:265px;">You are here</div>
+  </div>
+  <button class="start-btn">↑ Start Navigation</button>
+</div>
+
+<script>
+  /* Sample lot data. Replace with data from the simulator / server later. */
+  var lots = [
+    { id:"Rinker",  name:"Rinker Field Lot", left:110, top:70,  free:12, total:20 },
+    { id:"Sage",    name:"Sage Hall Lot",    left:60,  top:230, free:3,  total:30 },
+   { id:"LibN", name:"Library North", left:210, top:315, free:5, total:18 },
+    { id:"LibS",    name:"Library South",    left:340, top:290, free:0,  total:12 },
+    { id:"Hollis",  name:"Hollis Center Lot",left:560, top:120, free:8,  total:15 },
+    { id:"East",    name:"East Lot",         left:800, top:170, free:0,  total:25 },
+    { id:"West1", name:"West Row 1", left:130, top:360, free:10, total:22 },
+    { id:"West2",   name:"West Row 2",       left:340, top:360, free:6,  total:20 },
+    { id:"Stetson", name:"Stetson Hall Lot", left:620, top:250, free:4,  total:16 }
+  ];
+
+  function statusOf(free, total) {
+    if (free === 0) return "full";
+    if (free / total <= 0.3) return "filling";
+    return "free";
+  }
+
+  function render() {
+    var box = document.getElementById("pins");
+    box.innerHTML = "";
+    lots.forEach(function (lot) {
+      var status = statusOf(lot.free, lot.total);
+      var cls = status === "free" ? "" : " " + status;
+      // one little square under the pin, colored the same as the badge
+      // (green free, yellow filling up, red full, gray unknown)
+      var square = '<div class="mini-spot' + cls + '"></div>';
+
+      var pin = document.createElement("div");
+      pin.className = "pin" + cls;
+      pin.style.left = lot.left + "px";
+      pin.style.top = lot.top + "px";
+      pin.innerHTML =
+        '<div class="badge">📍 ' + lot.free + '/' + lot.total + '</div>' +
+        square +
+        '<div class="stem"></div><div class="label">' + lot.name + '</div>';
+      pin.onclick = function () { showNav(lot); };
+      box.appendChild(pin);
+    });
+  }
+
+  function setUpdated() {
+    var now = new Date();
+    document.getElementById("updatedText").textContent =
+      "Last updated: " + now.toLocaleDateString([], { month: "short", day: "numeric" }) +
+      ", " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  function refresh() {
+    // placeholder: swap in a fetch to the server's /api/lots later
+    lots.forEach(function (l) { /* no-op for now, sample data only */ });
+    render();
+    setUpdated();
+  }
+
+  function showNav(lot) {
+    document.getElementById("mapScreen").style.display = "none";
+    document.getElementById("nav").style.display = "block";
+    document.getElementById("navLotName").textContent = lot.id;
+    document.getElementById("destBadge").textContent = lot.id;
+  }
+
+  function showMap() {
+    document.getElementById("nav").style.display = "none";
+    document.getElementById("mapScreen").style.display = "block";
+  }
+
+  render();
+  setUpdated();
+</script>
+</body>
+</html>
+""";
+
+	public static void main(String[] args) throws Exception {
+
+		System.out.println("starting server...");
+
+		HttpServer myServer = HttpServer.create(new InetSocketAddress(myPort), 0);
+
+		// i used a regular class here instead of the arrow thing (lambda)
+		// because it made more sense to me to write it this way
+		myServer.createContext("/", new MyHandler());
+
+		myServer.start();
+
+		System.out.println("Practice lot running at http://localhost:" + myPort);
 	}
-		sb.append("</main></body></html>");
-		return sb.toString();
-}
 
+	// this class is what actually sends the webpage back when someone
+	// opens the link in their browser
+	static class MyHandler implements HttpHandler {
+		public void handle(HttpExchange exchange) throws IOException {
 
-public static void main(String[] args) throws Exception {
-	Random rng = new Random();
-	for (int z = 0; z < 3; z++) {
-		for (int n = 1; n <= 40; n++) {
-			TAKEN[z][n]= rng.nextDouble() < FILL[z];
+			byte[] pageBytes = PAGE.getBytes(StandardCharsets.UTF_8);
+
+			exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
+			exchange.sendResponseHeaders(200, pageBytes.length);
+
+			exchange.getResponseBody().write(pageBytes);
+			exchange.getResponseBody().close();
 		}
 	}
-	lastUpdated = LocalDateTime.now().format(DateTimeFormatter.ofPattern("MMM d, h:mm:ss a"));
-	
-	HttpServer server = HttpServer.create(new InetSocketAddress(8080), 0);
-	server .createContext("/", ex -> {
-		byte[] body = page().getBytes(StandardCharsets.UTF_8);
-		ex.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-		ex.sendResponseHeaders(200, body.length);
-		ex.getResponseBody().write(body);
-		ex.close();
-});
-server.start();
-	System.out.println("Practice lot running at http://localhost:8080");
 }
-}
-
-
-
-
 
 
 
