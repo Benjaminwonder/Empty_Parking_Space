@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, fields
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Literal, get_args
+
+from parkfind.clock import parse_utc
 
 State = Literal["free", "occupied", "reserved", "out_of_service", "unknown"]
 Cadence = Literal["continuous", "near_live", "periodic_snapshot", "slow_snapshot", "event_only"]
@@ -32,9 +34,6 @@ REQUIRED = ("state", "confidence", "source", "observed_at", "ttl", "cadence_clas
 
 _TTL = re.compile(r"^(\d+)([smh])$")
 _TTL_UNIT_S = {"s": 1, "m": 60, "h": 3600}
-# Offset or Z is mandatory: a timestamp with no zone is how ages end up silently hours off.
-# Fractions only as 3 or 6 digits: the forms Python 3.10's fromisoformat can read.
-_ISO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3}(\d{3})?)?(Z|[+-]\d{2}:\d{2})$")
 
 
 class EventShapeError(ValueError):
@@ -73,8 +72,10 @@ class OccupancyEvent:
             raise bad(f"confidence {self.confidence!r} must be a number from 0 to 1")
         if not isinstance(self.source, str) or not self.source:
             raise bad("source must be a non-empty string")
-        if not isinstance(self.observed_at, str) or not _ISO_UTC.match(self.observed_at):
-            raise bad(f"observed_at {self.observed_at!r} must be ISO 8601 with Z or an offset")
+        try:
+            parse_utc(self.observed_at)
+        except ValueError:
+            raise bad(f"observed_at {self.observed_at!r} must be ISO 8601 with Z or an offset") from None
         ttl = _TTL.match(self.ttl) if isinstance(self.ttl, str) else None
         if not ttl or int(ttl.group(1)) == 0:
             raise bad(f"ttl {self.ttl!r} must look like 15s, 8m or 1h and be above zero")
@@ -128,8 +129,7 @@ class OccupancyEvent:
 
     def observed_utc(self) -> datetime:
         """why: age = now - observed_at needs a real timezone-aware datetime, parsed the same way everywhere.
-        boundary: converts, never guesses; the validator already refused timestamps without a zone.
-        ugly: Python 3.10 cannot parse a trailing Z (3.11 can), and the simulator writes exactly that.
+        boundary: delegates to clock.parse_utc, the one timestamp parser in ParkFind; never parses here.
+        ugly: the validator already proved the string parses, so this cannot fail on a made event.
         """
-        text = self.observed_at[:-1] + "+00:00" if self.observed_at.endswith("Z") else self.observed_at
-        return datetime.fromisoformat(text).astimezone(timezone.utc)
+        return parse_utc(self.observed_at)
