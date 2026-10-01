@@ -26,3 +26,18 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
         Age = now - event.observed_utc(); expired when age > event.ttl_seconds(). Do not parse observed_at or ttl yourself.
         Unknown keys are refused on purpose. If you need a field, ask BD.
   → DK: nothing yet.
+
+2026-10-01 · BD-3 done · writes SK-CLOCK
+  landed: parkfind/clock.py — parse_utc(text), make_clock(start=None, speed=1.0) → now(). event.observed_utc() uses parse_utc.
+  → DI: in DI-3 and DI-4 only: now = make_clock(args.now, args.speed); call now() once per request and pass the result down.
+        Never call datetime.now() inside parkfind/; librarian --check fails on it (rule B3).
+
+2026-10-01 · BD-4 done · writes SK-FEED · SK-TRUTH
+  landed: sim.py --out <run> writes out/<run>/feed.jsonl and out/<run>/truth.json. live_snapshot/snapshot.json removed.
+          Gate notes say only "gate +1 car in" / "gate -1 car out". Hourly zone claims carry free_count/total_count.
+          --start is lot-local (layout utc_offset -04:00): 06:30 at the lot = 10:30Z in the feed.
+  → DI: read feed.jsonl only; truth.json is for DI-5/DI-6 tests. A lot-local --now looks like 2026-09-21T08:15:00-04:00.
+  → DK: the lot's local offset is in lot_commuter_north.json (utc_offset). Show times as lot-local; ages come from SK-VIEW.
+        Requests for WebPage: add as line 1  // box: T6 · lane: DK · read BRIDGES.md before editing
+        "Last updated" uses the browser clock (new Date()) and the lots are typed-in sample numbers; both get replaced by SK-VIEW in DK-3.
+        The server moved to port 8085; CONTRACT now says so. Tell BD if the nine campus lots should replace the single practice lot.

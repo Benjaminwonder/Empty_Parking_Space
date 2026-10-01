@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 # box: S1–S7 · lane: BD · read BRIDGES.md before editing
 """
-ParkFind Simulator MVP — ground-truth World + cadence Adapters.
+ParkFind simulator: a fake lot (World) plus fake sensors (Adapters).
 
 Why this exists
 ---------------
 The product is "which empty stall (or smallest honest zone) should this
 driver go to right now, given the age of the last observation?"
-Cameras are not signed. This file is the first real feed.
+Cameras are not signed. This file is the first feed.
 
 Mental model (two layers, do not collapse them)
 -----------------------------------------------
   World     = what is actually true in the lot, every tick of the clock.
   Adapter   = what a sensor *would have told us* at its cadence.
-              Adapters don mutate the World. They only observe and emit.
+              Adapters never change the World. They only observe and emit.
 
-The rest of ParkFind only ever sees occupancy events. Same schema a
-YOLO adapter, a gate counter, or a 15-minute scrape will write later.
+The rest of ParkFind only ever sees occupancy events (parkfind/event.py),
+the same shape a camera, a gate counter or a 15-minute scrape will write later.
+
+Each run writes one folder:
+  out/<run>/feed.jsonl   the events, one per line: what the trunk reads
+  out/<run>/truth.json   what was really true each tick: tests only, never the trunk
 
 Run (from this folder):
-  python3 sim.py
-  python3 sim.py --cadence continuous,periodic_5min,hourly,event_only
-  python3 sim.py --minutes 180 --tick 30
+  python sim.py
+  python sim.py --cadence continuous --out out/quick
+  python sim.py --cadence periodic_15min,hourly --out out/slow
+  python sim.py --start 2026-09-21T06:30:00 --minutes 180 --tick 30
+
+Times: --start is lot-local time (the layout's utc_offset). Events are stamped in UTC.
 
 What this file does NOT do: YOLO, holds, aisle routing, a driver app.
 """
@@ -31,20 +38,23 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Iterable, Literal
 
-# The event shape lives in the trunk package; the simulator is just one writer of it.
+# The event shape and the timestamp reader live in the trunk package; the simulator is
+# just one writer. The arrow only points this way: parkfind never imports sim.py.
+from parkfind.clock import parse_utc
 from parkfind.event import Cadence, OccupancyEvent, State
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_LOT = HERE / "lot_commuter_north.json"
-OUT_DIR = HERE / "out"
 
 
 # TTL is a function of cadence. A 5-minute poll does not get a 4-second TTL.
+# These are simulated-sensor policy; a real adapter sets its own.
 TTL_BY_CADENCE = {
     "continuous": "15s",
     "near_live": "90s",
@@ -77,7 +87,11 @@ class Stall:
 
 
 def load_lot(path: Path) -> tuple[dict, list[Stall]]:
-    spec = json.loads(path.read_text())
+    """why: turn the one layout file (L0) into the stalls the World moves cars in and out of.
+    boundary: reads the layout only; invents no stalls and no defaults for missing keys.
+    ugly: an ADA or EV id that matches no generated stall is a typo in L0 and stops the run.
+    """
+    spec = json.loads(path.read_text(encoding="utf-8"))
     special_ada = set(spec.get("special_stalls", {}).get("ada", []))
     special_ev = set(spec.get("special_stalls", {}).get("ev", []))
     stalls: list[Stall] = []
@@ -92,7 +106,23 @@ def load_lot(path: Path) -> tuple[dict, list[Stall]]:
                 else:
                     constraint = "any"
                 stalls.append(Stall(sid, zone["zone_id"], row, constraint))
+    unknown = (special_ada | special_ev) - {s.stall_id for s in stalls}
+    if unknown:
+        raise SystemExit(f"{path.name}: special_stalls lists ids that are not in the lot: {sorted(unknown)}")
     return spec, stalls
+
+
+def lot_tz(spec: dict) -> tzinfo:
+    """why: the commuter morning is a lot-local idea; 06:30 has to mean 06:30 at the lot.
+    boundary: reads utc_offset from the layout; refuses rather than quietly assuming UTC.
+    ugly: a fixed offset ignores daylight saving; Florida is -04:00 until early November, -05:00 after.
+    """
+    text = spec.get("utc_offset")
+    m = re.match(r"^([+-])(\d{2}):(\d{2})$", text or "")
+    if not m:
+        raise SystemExit(f"layout utc_offset {text!r} must look like -04:00")
+    sign = -1 if m.group(1) == "-" else 1
+    return timezone(sign * timedelta(hours=int(m.group(2)), minutes=int(m.group(3))))
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +144,10 @@ class World:
         self.last_flips: list[tuple[str, State, State]] = []
 
     def free_regular(self) -> list[Stall]:
+        """why: the stalls a regular arriving car may take, nearest zone first.
+        boundary: reads World state only; never returns ADA or EV stalls.
+        ugly: the World has no ADA/EV drivers yet, so those stalls stay free all run (a known gap).
+        """
         out = []
         for zid in self.zone_order:
             for s in self.stalls.values():
@@ -122,6 +156,10 @@ class World:
         return out
 
     def counts(self) -> dict:
+        """why: true free/occupied totals per zone and for the lot, for truth.json and the hourly rollup.
+        boundary: reads World state; callers outside the simulator get these numbers only through an adapter's event.
+        ugly: 'free' here includes ADA and EV stalls, so a free zone count is not all space a regular car can use.
+        """
         by_zone: dict[str, dict[str, int]] = {}
         for s in self.stalls.values():
             z = by_zone.setdefault(s.zone_id, {"free": 0, "occupied": 0, "ada_free": 0, "ev_free": 0, "total": 0})
@@ -141,7 +179,10 @@ class World:
         }
 
     def arrival_rate_per_tick(self, t: datetime, tick_s: int) -> float:
-        """Weekday commuter shape: steep 7–9, then taper. Scaled to tick length."""
+        """why: a weekday commuter shape (steep 7–9, then taper), scaled to the tick length.
+        boundary: pure function of the lot-local hour; touches no state.
+        ugly: t must be lot-local; a UTC time here would put the morning rush four hours late.
+        """
         hour = t.hour + t.minute / 60.0
         # cars per hour targeting this 120-stall lot
         if hour < 6.5:
@@ -159,12 +200,19 @@ class World:
         return per_hour * (tick_s / 3600.0)
 
     def stay_minutes(self) -> int:
-        # Mix of all-day commuters and short class hops so stalls actually flip.
+        """why: a mix of all-day commuters and short class hops, so stalls actually flip back to free.
+        boundary: draws from the World's seeded random generator only, so a seed replays the same morning.
+        ugly: none of these leave before 50 minutes, so a 3-hour run sees few departures early on.
+        """
         if self.rng.random() < 0.25:
             return self.rng.randint(50, 110)
         return self.rng.randint(240, 480)
 
     def step(self, t: datetime, tick_s: int) -> None:
+        """why: advance the true lot by one tick: departures, then arrivals.
+        boundary: the only method that changes World state; adapters only read last_flips afterwards.
+        ugly: when no regular stall is free the arriving car is dropped, never parked in ADA/EV.
+        """
         self.last_flips = []
 
         # Departures first — a leaving car frees a stall before the next arrival picks.
@@ -214,6 +262,10 @@ class ContinuousAdapter(Adapter):
     source = "sim.continuous"
 
     def emit(self, world: World, t: datetime) -> list[OccupancyEvent]:
+        """why: the live-camera case: one stall event each time a stall changes.
+        boundary: reads last_flips and stall zones; writes nothing back to the World.
+        ugly: a stall that never changes is never reported, so a reader cannot tell 'still free' from 'never seen'.
+        """
         events = []
         iso = _iso(t)
         for stall_id, _old, new in world.last_flips:
@@ -235,7 +287,7 @@ class ContinuousAdapter(Adapter):
 
 
 class SnapshotAdapter(Adapter):
-    """Poll every N minutes. Emits every stall (5-min) or every zone (hourly)."""
+    """Poll every N minutes. Emits every stall (5/15-min) or every zone (hourly)."""
 
     def __init__(self, every_min: int, grain: Literal["stall", "zone"], cadence_class: Cadence, source: str):
         self.every_min = every_min
@@ -245,17 +297,24 @@ class SnapshotAdapter(Adapter):
         self._last_fire_minute: int | None = None
 
     def due(self, t: datetime) -> bool:
+        """why: fire once at the top of each N-minute bucket, like a scheduled poll.
+        boundary: reads the time and its own last-fire memory; nothing else.
+        ugly: with a tick that does not land on the bucket's first minute the poll is skipped, not late.
+        """
         minute_index = t.hour * 60 + t.minute
         bucket = minute_index // self.every_min
         if self._last_fire_minute == bucket:
             return False
-        # Fire at the top of a bucket, once.
         if minute_index % self.every_min != 0:
             return False
         self._last_fire_minute = bucket
         return True
 
     def emit(self, world: World, t: datetime) -> list[OccupancyEvent]:
+        """why: the slow-feed cases: every stall at a poll, or only zone counts every hour.
+        boundary: reads World state at the poll moment; zone claims carry counts, never stall ids.
+        ugly: a zone with one free stall is reported 'free'; free_count is what a reader must trust (D2).
+        """
         if not self.due(t):
             return []
         iso = _iso(t)
@@ -278,23 +337,20 @@ class SnapshotAdapter(Adapter):
                     )
                 )
         else:
-            counts = world.counts()["zones"]
-            for zid, c in counts.items():
-                # Zone snapshot: occupied if the zone is mostly full; else free.
-                # Honest product rule later: do not pin a stall from this.
-                state: State = "occupied" if c.get("free", 0) == 0 else "free"
+            for zid, c in world.counts()["zones"].items():
                 events.append(
                     OccupancyEvent(
                         stall_id=None,
                         zone_id=zid,
                         lot_id=world.lot_id,
-                        state=state,
+                        state="occupied" if c["free"] == 0 else "free",
                         confidence=conf,
                         source=self.source,
                         observed_at=iso,
                         ttl=ttl,
                         cadence_class=self.cadence_class,
-                        note=f"free={c.get('free', 0)} occupied={c.get('occupied', 0)} total={c['total']}",
+                        free_count=c["free"],
+                        total_count=c["total"],
                     )
                 )
         return events
@@ -307,12 +363,15 @@ class EventOnlyAdapter(Adapter):
     source = "sim.gate"
 
     def emit(self, world: World, t: datetime) -> list[OccupancyEvent]:
+        """why: the cheapest sensor: a gate that only knows a car came in or went out.
+        boundary: lot-grain only; the note carries the direction and nothing the gate could not see.
+        ugly: the World knows which stall changed; writing it here would leak truth into the feed (X2).
+        """
         events = []
         iso = _iso(t)
-        for stall_id, old, new in world.last_flips:
+        for _stall_id, old, new in world.last_flips:
             if old == new:
                 continue
-            direction = "+1 occupied" if new == "occupied" else "-1 occupied"
             events.append(
                 OccupancyEvent(
                     stall_id=None,
@@ -324,27 +383,10 @@ class EventOnlyAdapter(Adapter):
                     observed_at=iso,
                     ttl=TTL_BY_CADENCE[self.cadence_class],
                     cadence_class=self.cadence_class,
-                    note=f"gate {direction}; hidden stall was {stall_id}",
+                    note="gate +1 car in" if new == "occupied" else "gate -1 car out",
                 )
             )
         return events
-
-
-# ---------------------------------------------------------------------------
-# Snapshot the rest of the stack will read (not the World)
-# ---------------------------------------------------------------------------
-
-def live_snapshot(events: list[OccupancyEvent], world_counts: dict, t: datetime) -> dict:
-    """Last event per stall/zone from the *adapters*, plus a world-truth sidecar for tests."""
-    by_key: dict[str, dict] = {}
-    for e in events:
-        key = e.stall_id or f"zone:{e.zone_id}" if e.zone_id else f"lot:{e.lot_id}"
-        by_key[key] = e.to_json()
-    return {
-        "as_of": _iso(t),
-        "world_truth": world_counts,  # test-only. Production snapshot must not include this.
-        "last_seen": by_key,
-    }
 
 
 def _iso(t: datetime) -> str:
@@ -364,21 +406,40 @@ CADENCE_PRESETS = {
 }
 
 
-def run(lot_path: Path, start: datetime, minutes: int, tick_s: int, cadence_names: list[str], seed: int) -> dict:
+def truth_row(world: World, t: datetime) -> dict:
+    """why: one tick of what was really true, so tests can check an answer against reality.
+    boundary: goes only to truth.json; nothing here is ever written into the feed.
+    ugly: the trunk must never open truth.json; the librarian's B2 rule fails any file that tries.
+    """
+    zones = world.counts()["zones"]
+    return {
+        "t": _iso(t),
+        "stalls": {sid: s.true_state for sid, s in world.stalls.items()},
+        "zones": {zid: {"free": z["free"], "occupied": z["occupied"], "total": z["total"]} for zid, z in zones.items()},
+    }
+
+
+def run(lot_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s: int,
+        cadence_names: list[str], seed: int) -> dict:
+    """why: play one simulated morning and write its two files: the feed and the truth.
+    boundary: writes only inside out_dir; the feed gets adapter events, the truth file gets World state.
+    ugly: re-running into the same out_dir overwrites it, so quick and slow runs need different folders.
+    """
     spec, stalls = load_lot(lot_path)
     world = World(spec, stalls, seed=seed)
     adapters = [CADENCE_PRESETS[name]() for name in cadence_names]
 
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    feed_path = OUT_DIR / "feed.jsonl"
-    snap_path = OUT_DIR / "snapshot.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    feed_path = out_dir / "feed.jsonl"
+    truth_path = out_dir / "truth.json"
 
     all_events: list[OccupancyEvent] = []
+    truth_ticks: list[dict] = []
     t = start
     end = start + timedelta(minutes=minutes)
     printed_hhmm: set[str] = set()
 
-    with feed_path.open("w") as feed:
+    with feed_path.open("w", encoding="utf-8", newline="\n") as feed:
         while t <= end:
             world.step(t, tick_s)
             batch: list[OccupancyEvent] = []
@@ -387,6 +448,7 @@ def run(lot_path: Path, start: datetime, minutes: int, tick_s: int, cadence_name
             for e in batch:
                 feed.write(json.dumps(e.to_json()) + "\n")
             all_events.extend(batch)
+            truth_ticks.append(truth_row(world, t))
 
             hhmm = t.strftime("%H:%M")
             minutes_from_start = int((t - start).total_seconds() // 60)
@@ -401,21 +463,24 @@ def run(lot_path: Path, start: datetime, minutes: int, tick_s: int, cadence_name
                 )
             t += timedelta(seconds=tick_s)
 
-    snap = live_snapshot(all_events, world.counts(), end)
-    snap_path.write_text(json.dumps(snap, indent=2))
+    truth = {"lot_id": world.lot_id, "tick_s": tick_s, "utc_offset": spec["utc_offset"], "ticks": truth_ticks}
+    truth_path.write_text(json.dumps(truth, separators=(",", ":")), encoding="utf-8")
     return {
         "feed_path": str(feed_path),
-        "snapshot_path": str(snap_path),
+        "truth_path": str(truth_path),
         "event_count": len(all_events),
         "arrivals": world.arrivals,
         "departures": world.departures,
-        "truth": world.counts(),
         "by_source": _count_by(all_events, "source"),
         "by_cadence": _count_by(all_events, "cadence_class"),
     }
 
 
 def _count_by(events: Iterable[OccupancyEvent], attr: str) -> dict[str, int]:
+    """why: the end-of-run tally per source and cadence, the quickest check that a run did what was asked.
+    boundary: counts the events it is given; reads nothing else.
+    ugly: an adapter that fired zero times is simply absent from the tally, not listed as 0.
+    """
     out: dict[str, int] = {}
     for e in events:
         k = getattr(e, attr)
@@ -423,38 +488,52 @@ def _count_by(events: Iterable[OccupancyEvent], attr: str) -> dict[str, int]:
     return out
 
 
+def parse_start(text: str, tz: tzinfo) -> datetime:
+    """why: --start is typed as lot-local time, the way anyone at the lot would say it.
+    boundary: a time with no zone is read as lot-local; a time with Z or an offset is honoured and converted.
+    ugly: '06:30' with no zone used to be read as 06:30 UTC, which is 2:30 a.m. in Florida.
+    """
+    if re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$", text):
+        return datetime.fromisoformat(text).replace(tzinfo=tz)
+    return parse_utc(text).astimezone(tz)
+
+
 def main() -> None:
+    """why: the command line: pick a lot, cadences, a window and an output folder, then run one morning.
+    boundary: parses arguments and prints; the work lives in run().
+    ugly: a relative --out is placed under this repo folder, so a run from another directory still lands in out/.
+    """
     p = argparse.ArgumentParser(description="ParkFind occupancy-event simulator")
     p.add_argument("--lot", default=str(DEFAULT_LOT))
     p.add_argument("--cadence", default="continuous,periodic_5min,hourly,event_only",
                    help="comma list: continuous,periodic_5min,periodic_15min,hourly,event_only")
+    p.add_argument("--out", default="out/latest", help="run folder for feed.jsonl and truth.json (default out/latest)")
     p.add_argument("--minutes", type=int, default=180, help="simulated minutes from --start")
     p.add_argument("--tick", type=int, default=30, help="world tick seconds")
-    p.add_argument("--start", default="2026-09-21T06:30:00")
+    p.add_argument("--start", default="2026-09-21T06:30:00", help="lot-local time, e.g. 2026-09-21T06:30:00")
     p.add_argument("--seed", type=int, default=7)
     args = p.parse_args()
 
-    start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     names = [n.strip() for n in args.cadence.split(",") if n.strip()]
     unknown = [n for n in names if n not in CADENCE_PRESETS]
     if unknown:
         raise SystemExit(f"unknown cadence {unknown}. choose from {list(CADENCE_PRESETS)}")
+    lot_path = Path(args.lot)
+    spec, _ = load_lot(lot_path)
+    start = parse_start(args.start, lot_tz(spec))
+    out_dir = Path(args.out) if Path(args.out).is_absolute() else HERE / args.out
 
-    print(f"lot={args.lot}")
-    print(f"window={start.isoformat()} +{args.minutes}m  tick={args.tick}s  seed={args.seed}")
+    print(f"lot={lot_path.name}  out={out_dir.relative_to(HERE) if out_dir.is_relative_to(HERE) else out_dir}")
+    print(f"window={start.isoformat()} (= {_iso(start)}) +{args.minutes}m  tick={args.tick}s  seed={args.seed}")
     print(f"cadences={names}")
     print()
-    result = run(Path(args.lot), start, args.minutes, args.tick, names, args.seed)
+    result = run(lot_path, out_dir, start, args.minutes, args.tick, names, args.seed)
     print()
     print(f"arrivals={result['arrivals']}  departures={result['departures']}  events={result['event_count']}")
     print(f"by_source    {result['by_source']}")
     print(f"by_cadence   {result['by_cadence']}")
     print(f"feed         {result['feed_path']}")
-    print(f"snapshot     {result['snapshot_path']}")
-    print()
-    print("Lesson: open feed.jsonl and compare a continuous flip at 08:12")
-    print("with the next 5-min snapshot and the next hourly zone rollup.")
-    print("Same World. Four different claims about it.")
+    print(f"truth        {result['truth_path']}   (tests only)")
 
 
 if __name__ == "__main__":
