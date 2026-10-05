@@ -1,3 +1,4 @@
+// box: T6 · lane: DK · read BRIDGES.md before editing
 package parkfind;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -7,273 +8,1321 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
-
-// this is my parking project page. its all one file because its easier
-// for me to keep track of than a bunch of separate files right now
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class WebPage {
 
-	// the port number the server runs on. i just picked 8080, if it says
-	// "address already in use" change this number and try again, it is currently at 8085.
-	static int myPort = 8085;
+    // port 8085: Benjamin's handoff note and CONTRACT.md say the server moved here
+    static int myPort = 8085;
 
-	// i copy pasted my html file in here between the triple quotes
-	static String PAGE = """
+    // one parking spot. everything in here comes from the layout file (L0),
+    // nothing is typed in by hand and nothing is random anymore
+    static class Stall {
+        String id;
+        String zone;
+        String row;
+        int number;
+        boolean ada;
+        boolean ev;
+
+        Stall(String id, String zone, String row, int number,
+              boolean ada, boolean ev) {
+            this.id = id;
+            this.zone = zone;
+            this.row = row;
+            this.number = number;
+            this.ada = ada;
+            this.ev = ev;
+        }
+    }
+
+    // the whole lot: its name plus every stall in the order they're read
+    static class Layout {
+        String lotId;
+        List<Stall> stalls = new ArrayList<>();
+    }
+
+    public static void main(String[] args) throws Exception {
+
+        // read the layout file first. run this from the project root because
+        // the path is relative (the json sits next to sim.py)
+        Layout layout = loadLayout("lot_commuter_north.json");
+
+        // build the html one time at startup since the layout doesn't change
+        String page = buildPage(layout);
+
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(myPort), 0);
+
+        // "/" is the only route, every request just gets the page back
+        server.createContext("/", new MyHandler(page));
+        server.start();
+
+        // quick check against BD-1: should say 120 stalls, 5 ADA, 8 EV
+        long adaCount = layout.stalls.stream().filter(s -> s.ada).count();
+        long evCount = layout.stalls.stream().filter(s -> s.ev).count();
+
+        System.out.println("ParkFind WebPage running at http://localhost:" + myPort);
+        System.out.println("Layout: " + layout.lotId);
+        System.out.println("Stalls loaded: " + layout.stalls.size()
+                + " (ADA " + adaCount + ", EV " + evCount + ")");
+    }
+
+    // sends the finished page to the browser. it doesn't think about
+    // anything, it just hands over the html string
+    static class MyHandler implements HttpHandler {
+
+        private String page;
+
+        MyHandler(String page) {
+            this.page = page;
+        }
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+
+            byte[] response =
+                    page.getBytes(StandardCharsets.UTF_8);
+
+            exchange.getResponseHeaders().set(
+                    "Content-Type",
+                    "text/html; charset=utf-8");
+
+            exchange.sendResponseHeaders(
+                    200,
+                    response.length);
+
+            exchange.getResponseBody().write(response);
+            exchange.getResponseBody().close();
+        }
+    }
+
+    // DK-2: turn lot_commuter_north.json into stall objects.
+    // no stall id or ADA/EV spot is written in this file, it all comes from here.
+    // I'm using regex instead of a json library because we're standard
+    // library only (D1)
+    static Layout loadLayout(String filename) throws IOException {
+
+        String json = Files.readString(Path.of(filename));
+
+        Layout layout = new Layout();
+
+        // grab the lot name (lot_id)
+
+        Matcher lotMatcher = Pattern.compile(
+                "\"lot_id\"\\s*:\\s*\"([^\"]+)\"")
+                .matcher(json);
+
+        if (lotMatcher.find()) {
+            layout.lotId = lotMatcher.group(1);
+        }
+
+        // the ADA and EV lists from special_stalls, used later to mark stalls
+        List<String> adaStalls =
+                getStringArray(json, "ada");
+
+        List<String> evStalls =
+                getStringArray(json, "ev");
+
+        // matches one zone block. heads up: the keys have to be in this exact
+        // order (zone_id, fill_priority, rows, stalls_per_row) or it finds
+        // nothing, so if Benjamin changes the json order this breaks
+        Pattern zonePattern = Pattern.compile(
+                "\\{\\s*" +
+                "\"zone_id\"\\s*:\\s*\"([^\"]+)\"\\s*," +
+                "\\s*\"fill_priority\"\\s*:\\s*([0-9]+)\\s*," +
+                "\\s*\"rows\"\\s*:\\s*\\[([^\\]]+)\\]\\s*," +
+                "\\s*\"stalls_per_row\"\\s*:\\s*([0-9]+)" +
+                "\\s*\\}");
+
+        Matcher zoneMatcher = zonePattern.matcher(json);
+
+        // go through each zone (near, mid, far)
+        while (zoneMatcher.find()) {
+
+            String zone = zoneMatcher.group(1);
+            String rowsText = zoneMatcher.group(3);
+            int stallsPerRow =
+                    Integer.parseInt(zoneMatcher.group(4));
+
+            // pull the row names out of the rows list, like N1, N2...
+            Matcher rowMatcher = Pattern.compile(
+                    "\"([^\"]+)\"")
+                    .matcher(rowsText);
+
+            while (rowMatcher.find()) {
+
+                String row = rowMatcher.group(1);
+
+                // every row has stalls_per_row stalls, so count 1 up to that.
+                // %02d makes it 01 not 1, so ids look like N1-01
+                for (int number = 1;
+                     number <= stallsPerRow;
+                     number++) {
+
+                    String id = String.format(
+                            "%s-%02d",
+                            row,
+                            number);
+
+                    // a stall is ADA/EV only if the layout file lists its id
+                    boolean ada =
+                            adaStalls.contains(id);
+
+                    boolean ev =
+                            evStalls.contains(id);
+
+                    layout.stalls.add(
+                            new Stall(
+                                    id,
+                                    zone,
+                                    row,
+                                    number,
+                                    ada,
+                                    ev));
+                }
+            }
+        }
+
+        // if nothing loaded the regex probably didn't match the file, so stop
+        // loudly instead of showing an empty lot (and don't make up stalls)
+        if (layout.stalls.isEmpty()) {
+            throw new IOException(
+                    "No stalls found in " + filename
+                    + " - check the zone keys are in the expected order");
+        }
+
+        return layout;
+    }
+
+    // finds "key": [ "a", "b" ] in the json and gives back a list of the
+    // strings. returns an empty list if the key isn't there
+    static List<String> getStringArray(
+            String json,
+            String key) {
+
+        List<String> values = new ArrayList<>();
+
+        Pattern pattern = Pattern.compile(
+                "\"" + key +
+                "\"\\s*:\\s*\\[([^\\]]*)\\]");
+
+        Matcher matcher = pattern.matcher(json);
+
+        if (!matcher.find()) {
+            return values;
+        }
+
+        Matcher valueMatcher = Pattern.compile(
+                "\"([^\"]+)\"")
+                .matcher(matcher.group(1));
+
+        while (valueMatcher.find()) {
+            values.add(valueMatcher.group(1));
+        }
+
+        return values;
+    }
+
+    // makes a string safe to put inside "quotes" in the json I hand to the page
+    static String esc(String s) {
+        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    // turns the layout into a small json string for the page's javascript.
+    // shape: {lot, zones:[{id, rows:[{id, stalls:[{id, n, t}]}]}]}
+    // t is Regular / ADA / EV. this is the ONLY place the page gets stalls from,
+    // so the map draws exactly what the layout file says (X5 stays dead)
+    static String buildLayoutJson(Layout layout) {
+
+        // group the flat stall list into zone -> row -> stalls, keeping the
+        // same order the file had them in
+        Map<String, Map<String, List<Stall>>> zones = new LinkedHashMap<>();
+
+        for (Stall stall : layout.stalls) {
+            zones.computeIfAbsent(stall.zone, k -> new LinkedHashMap<>())
+                    .computeIfAbsent(stall.row, k -> new ArrayList<>())
+                    .add(stall);
+        }
+
+        List<String> zoneJson = new ArrayList<>();
+
+        for (Map.Entry<String, Map<String, List<Stall>>> zone : zones.entrySet()) {
+
+            List<String> rowJson = new ArrayList<>();
+
+            for (Map.Entry<String, List<Stall>> row : zone.getValue().entrySet()) {
+
+                List<String> stallJson = new ArrayList<>();
+
+                for (Stall stall : row.getValue()) {
+
+                    // same rule as before: EV wins if a stall is in both lists
+                    String type = "Regular";
+                    if (stall.ada) {
+                        type = "ADA";
+                    }
+                    if (stall.ev) {
+                        type = "EV";
+                    }
+
+                    stallJson.add("{\"id\":\"" + esc(stall.id) + "\","
+                            + "\"n\":" + stall.number + ","
+                            + "\"t\":\"" + type + "\"}");
+                }
+
+                rowJson.add("{\"id\":\"" + esc(row.getKey()) + "\","
+                        + "\"stalls\":[" + String.join(",", stallJson) + "]}");
+            }
+
+            zoneJson.add("{\"id\":\"" + esc(zone.getKey()) + "\","
+                    + "\"rows\":[" + String.join(",", rowJson) + "]}");
+        }
+
+        return "{\"lot\":\"" + esc(layout.lotId) + "\","
+                + "\"zones\":[" + String.join(",", zoneJson) + "]}";
+    }
+
+    // makes the whole html page as one string.
+    // the page only draws what the layout says. it doesn't decide whether a
+    // spot is free or taken (that's DK-3 and comes from SK-VIEW), so every
+    // stall is gray / unknown for now. I did NOT copy the made up 12/20 numbers
+    // from the mockup because that would be inventing occupancy
+    static String buildPage(Layout layout) {
+
+        // the page is a plain text block. I swap in the layout json
+        // with .replace() instead of .formatted() so the css / javascript
+        // can use % signs without breaking anything
+        // NOTE: don't put a backslash in the javascript, the text block eats it
+        String page = """
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="utf-8">
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ParkFind - Campus Map</title>
+
+<title>ParkFind</title>
+
 <style>
-  :root {
-    --green:#1e8e3e; --green-dark:#0f5c26; --yellow:#e0a800; --red:#d33; --gray:#6b7280;
-    --ink:#1c1c1e; --muted:#6b6f76; --line:#dcdfe3; --bg:#f4f6f5; --card:#ffffff;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, "Segoe UI", Arial, sans-serif; color:var(--ink); background:var(--bg); }
 
-  /* ---------- top bar (map screen) ---------- */
-  .topbar { display:flex; align-items:center; gap:14px; padding:12px 16px; background:#fff; border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  .search { flex:1; min-width:220px; display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:20px; padding:8px 14px; color:var(--muted); }
-  .search input { border:none; outline:none; flex:1; font-size:14px; }
-  .updated { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); white-space:nowrap; }
-  .updated .dot { width:8px; height:8px; border-radius:50%; background:var(--green); }
-  .refresh { cursor:pointer; border:none; background:none; font-size:16px; color:var(--muted); }
+/* css is just looks, nothing in here decides occupancy */
 
-  .filters { display:flex; gap:8px; padding:10px 16px; overflow-x:auto; background:#fff; border-bottom:1px solid var(--line); }
-  .chip { border:1px solid var(--line); background:#fff; border-radius:16px; padding:6px 14px; font-size:13px; white-space:nowrap; cursor:pointer; color:var(--ink); }
-  .chip.active { background:var(--green-dark); color:#fff; border-color:var(--green-dark); }
+* {
+    box-sizing: border-box;
+}
 
-  /* ---------- map ---------- */
-  .map-wrap { position:relative; max-width:1000px; height:640px; margin:0 auto; background:#eef3ec; overflow:hidden; }
-  .field { position:absolute; background:#c8e6c9; }
-  .track { position:absolute; border:10px solid #d99; border-radius:50%; background:transparent; }
-  .path { position:absolute; background:#e3e6e0; }
-  .bldg { position:absolute; background:#c9ccd1; border-radius:4px; display:flex; align-items:center; justify-content:center; text-align:center; font-size:12px; font-weight:600; color:#3c3f44; padding:4px; }
-  .bldg small { display:block; font-weight:400; font-size:10px; color:#6b6f76; }
+body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    background: #f4f5f7;
+    color: #1f2933;
+}
 
-  .pin { position:absolute; transform:translate(-50%, -100%); display:flex; flex-direction:column; align-items:center; cursor:pointer; }
-  .pin .badge { display:flex; align-items:center; gap:5px; background:#fff; border:2px solid var(--green); color:var(--green); border-radius:16px; padding:3px 10px; font-weight:700; font-size:13px; box-shadow:0 1px 4px rgba(0,0,0,.15); }
-  .pin.filling .badge { border-color:var(--yellow); color:var(--yellow); }
-  .pin.full .badge { border-color:var(--red); color:var(--red); }
-  .pin.unknown .badge { border-color:var(--gray); color:var(--gray); }
-  .pin .stem { width:2px; height:10px; background:currentColor; opacity:.5; }
-  .pin .label { font-size:10px; color:var(--muted); margin-top:2px; background:rgba(255,255,255,.85); padding:0 3px; border-radius:3px; }
+/* ---------- top bar (search + last updated) ---------- */
 
-  /* one little square under each pin, colored the same as its status */
-  .mini-spot { width:10px; height:10px; border-radius:2px; margin-top:3px; background:var(--green); }
-  .mini-spot.filling { background:var(--yellow); }
-  .mini-spot.full { background:var(--red); }
-  .mini-spot.unknown { background:var(--gray); }
+.topbar {
+    background: #ffffff;
+    border-bottom: 1px solid #ddd;
+    padding: 12px 20px 10px 20px;
+}
 
-  .zoom { position:absolute; right:14px; bottom:60px; display:flex; flex-direction:column; gap:6px; }
-  .zoom button, .locate { width:34px; height:34px; border-radius:6px; border:1px solid var(--line); background:#fff; font-size:16px; cursor:pointer; }
-  .locate { position:absolute; right:14px; bottom:14px; }
+.top-row {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
 
-  .legend { display:flex; gap:18px; align-items:center; padding:10px 16px; background:#fff; border-top:1px solid var(--line); font-size:13px; color:var(--muted); flex-wrap:wrap; }
-  .legend span { display:flex; align-items:center; gap:6px; }
-  .legend i { width:10px; height:10px; border-radius:50%; display:inline-block; }
-  .i-green{background:var(--green)} .i-yellow{background:var(--yellow)} .i-red{background:var(--red)} .i-gray{background:var(--gray)}
+.logo {
+    font-size: 22px;
+    font-weight: bold;
+    color: #14532d;
+}
 
-  /* ---------- navigation screen ---------- */
-  #nav { display:none; background:#fff; min-height:100vh; }
-  .nav-top { display:flex; align-items:center; gap:14px; padding:16px; border-bottom:1px solid var(--line); }
-  .back { border:none; background:none; font-size:20px; cursor:pointer; }
-  .nav-title { font-weight:700; font-size:16px; }
-  .nav-info { display:flex; align-items:center; gap:14px; padding:16px; }
-  .walk-icon { font-size:26px; }
-  .nav-time { font-weight:700; font-size:17px; }
-  .nav-sub { color:var(--muted); font-size:13px; }
-  .nav-map { position:relative; height:380px; background:#dfeadd; margin:0 16px; border-radius:10px; overflow:hidden; }
-  .nav-bldg { position:absolute; background:#c9ccd1; border-radius:4px; font-size:11px; font-weight:600; color:#3c3f44; display:flex; align-items:center; justify-content:center; text-align:center; padding:4px; }
-  .route { position:absolute; }
-  .dest-pin { position:absolute; transform:translate(-50%,-100%); display:flex; flex-direction:column; align-items:center; }
-  .dest-pin .badge { background:var(--green); color:#fff; border-radius:16px; padding:3px 10px; font-weight:700; font-size:13px; }
-  .here-dot { position:absolute; width:14px; height:14px; border-radius:50%; background:#2f6fed; border:3px solid #fff; box-shadow:0 0 0 2px #2f6fed; transform:translate(-50%,-50%); }
-  .here-label { position:absolute; font-size:12px; font-weight:600; color:#2f6fed; background:rgba(255,255,255,.9); padding:1px 6px; border-radius:4px; }
-  .start-btn { position:fixed; left:16px; right:16px; bottom:16px; background:var(--green-dark); color:#fff; border:none; border-radius:12px; padding:16px; font-size:16px; font-weight:600; cursor:pointer; }
+.search {
+    flex: 1;
+    max-width: 560px;
+    padding: 11px 14px;
+    border: 1px solid #ccc;
+    border-radius: 24px;
+    font-size: 14px;
+}
 
-  @media (max-width:600px){ .map-wrap{height:520px;} }
+.updated {
+    margin-left: auto;
+    color: #666;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #6b7280;
+}
+
+/* the filter chips */
+.chips {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+}
+
+.chip {
+    padding: 7px 16px;
+    background: #f1f3f4;
+    border: 1px solid #e0e3e5;
+    border-radius: 20px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.chip.on {
+    background: #14532d;
+    border-color: #14532d;
+    color: white;
+}
+
+/* ---------- map + side panel ---------- */
+
+.layout {
+    display: flex;
+    gap: 16px;
+    padding: 16px 20px;
+    align-items: flex-start;
+}
+
+.map-box {
+    flex: 1;
+    min-width: 0;
+    position: relative;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    overflow: hidden;
+    background: #d6e6cc;
+}
+
+.map-scroll {
+    overflow: auto;
+    height: calc(100vh - 150px);
+    min-height: 460px;
+}
+
+svg {
+    display: block;
+}
+
+/* + / - / fit buttons in the corner of the map */
+.zoom {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.zbtn {
+    width: 38px;
+    height: 38px;
+    border: 1px solid #d0d4d8;
+    border-radius: 10px;
+    background: white;
+    font-size: 20px;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.zbtn.small {
+    font-size: 12px;
+}
+
+.side {
+    width: 320px;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    padding: 18px;
+}
+
+.side h2 {
+    margin: 0 0 4px 0;
+    font-size: 20px;
+}
+
+.side .sub {
+    color: #666;
+    font-size: 13px;
+    margin-bottom: 14px;
+}
+
+.badge {
+    display: inline-block;
+    font-size: 12px;
+    padding: 3px 9px;
+    border-radius: 12px;
+    margin-right: 6px;
+    background: #e5e7eb;
+}
+
+.badge.ada { background: #cfe0fb; color: #1e3a8a; }
+.badge.ev  { background: #e5d8f7; color: #5b21b6; }
+
+.status-note {
+    margin: 12px 0;
+    padding: 10px 12px;
+    background: #f3f4f6;
+    border-left: 4px solid #6b7280;
+    font-size: 13px;
+    border-radius: 4px;
+}
+
+.total {
+    font-size: 26px;
+    font-weight: bold;
+    margin: 6px 0 10px 0;
+}
+
+ol.steps {
+    margin: 0;
+    padding-left: 22px;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+ol.steps li {
+    margin-bottom: 6px;
+}
+
+.btn {
+    margin-top: 14px;
+    padding: 9px 14px;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    background: white;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.legend-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    margin: 6px 0;
+}
+
+.sw {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 2px solid #fff;
+    outline: 1px solid #9ca3af;
+}
+
+/* ---------- things inside the svg map ---------- */
+
+/* every stall starts as gray "unknown". DK-3 will swap in free / taken
+   classes from SK-VIEW later. unknown must never turn green */
+.stall-rect {
+    fill: #cfd2d6;
+    stroke: #ffffff;
+    stroke-width: 1.5;
+}
+
+.stall.type-ada .stall-rect {
+    fill: #c9d8f5;
+    stroke: #2563eb;
+    stroke-width: 2;
+}
+
+.stall.type-ev .stall-rect {
+    fill: #e1d3f5;
+    stroke: #7c3aed;
+    stroke-width: 2;
+}
+
+.stall {
+    cursor: pointer;
+}
+
+.stall:hover .stall-rect {
+    stroke: #111827;
+    stroke-width: 2.5;
+}
+
+.stall.selected .stall-rect {
+    stroke: #1a73e8;
+    stroke-width: 4;
+}
+
+.stall.dim {
+    opacity: 0.2;
+}
+
+.stall-num {
+    font-size: 9px;
+    fill: #374151;
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+.stall-icon {
+    font-size: 12px;
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+.pill-text {
+    font-size: 13px;
+    font-weight: bold;
+    fill: #374151;
+}
+
+.label {
+    font-size: 13px;
+    fill: #5f554a;
+    font-weight: bold;
+    text-anchor: middle;
+}
+
+.road-label {
+    font-size: 12px;
+    fill: #6b7280;
+    letter-spacing: 3px;
+}
+
+/* the moving dashes on top of the blue route line */
+.route-flow {
+    stroke-dasharray: 2 14;
+    animation: flow 1s linear infinite;
+}
+
+@keyframes flow {
+    to { stroke-dashoffset: -16; }
+}
+
+@media (max-width: 900px) {
+    .layout { flex-direction: column; }
+    .side { width: 100%; }
+}
+
 </style>
 </head>
+
 <body>
 
-<!-- ================= MAP SCREEN ================= -->
-<div id="mapScreen">
-  <div class="topbar">
-    <div class="search">🔍 <input placeholder="Search building, lot, or destination (e.g. Library)"></div>
-    <div class="updated"><span class="dot"></span> <span id="updatedText">Last updated: --</span>
-      <button class="refresh" onclick="refresh()">⟳</button>
+<div class="topbar">
+
+    <div class="top-row">
+
+        <div class="logo">ParkFind</div>
+
+        <!-- search by stall id, like N1-06. Enter shows the route -->
+        <input id="search" class="search"
+               placeholder="Search a stall (e.g. N1-06)">
+
+        <!-- X4: this used to be the server start time. no live data is
+             hooked up yet so I'm not showing a fake time. DK-3 puts as_of here -->
+        <div class="updated">
+            <span class="dot"></span>
+            <span>Layout only &middot; live data not connected</span>
+        </div>
+
     </div>
-  </div>
 
-  <div class="filters">
-    <div class="chip active">All Lots</div>
-    <div class="chip">Near Me</div>
-    <div class="chip">Student</div>
-    <div class="chip">Faculty/Staff</div>
-    <div class="chip">Visitor</div>
-    <div class="chip">ADA</div>
-    <div class="chip">EV Charging</div>
-  </div>
+    <div class="chips" id="chips"></div>
 
-  <div class="map-wrap">
-    <div class="track" style="left:20px; top:60px; width:140px; height:100px;"></div>
-    <div class="bldg" style="left:170px; top:90px; width:110px; height:60px;">Sage Hall<small>Gym</small></div>
-    <div class="bldg" style="left:170px; top:190px; width:100px; height:55px;">Library</div>
-    <div class="bldg" style="left:300px; top:150px; width:70px; height:55px;">CUB</div>
-    <div class="bldg" style="left:400px; top:60px; width:130px; height:80px;">Hollis Center</div>
-    <div class="bldg" style="left:400px; top:230px; width:130px; height:110px;">Stetson Hall</div>
-
-    <div id="pins"></div>
-
-    <div class="zoom"><button onclick="return false">+</button><button onclick="return false">−</button></div>
-    <div class="locate">◎</div>
-  </div>
-
-  <div class="legend">
-    <span><i class="i-green"></i>Available</span>
-    <span><i class="i-yellow"></i>Filling Up</span>
-    <span><i class="i-red"></i>Full</span>
-    <span><i class="i-gray"></i>Unknown</span>
-  </div>
 </div>
 
-<!-- ================= NAVIGATION SCREEN ================= -->
-<div id="nav">
-  <div class="nav-top">
-    <button class="back" onclick="showMap()">←</button>
-    <div class="nav-title">Navigate to Spot <span id="navLotName"></span></div>
-  </div>
-  <div class="nav-info">
-    <div class="walk-icon">🚶</div>
-    <div>
-      <div class="nav-time" id="navTime">2 min (450 ft)</div>
-      <div class="nav-sub">From your current location</div>
+<div class="layout">
+
+    <div class="map-box">
+        <div class="map-scroll" id="scroll">
+            <svg id="map"></svg>
+        </div>
+
+        <div class="zoom">
+            <button class="zbtn" id="zin">+</button>
+            <button class="zbtn" id="zout">&minus;</button>
+            <button class="zbtn small" id="zfit">Fit</button>
+        </div>
     </div>
-  </div>
-  <div class="nav-map">
-    <div class="nav-bldg" style="left:180px; top:30px; width:120px; height:55px;">Sage Hall<br><small>Gym</small></div>
-    <div class="nav-bldg" style="left:220px; top:150px; width:110px; height:55px;">Library</div>
-    <svg class="route" width="260" height="220" style="left:40px; top:60px;">
-      <polyline points="20,20 20,90 120,90 120,190" fill="none" stroke="#2f6fed" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
-      <circle cx="20" cy="20" r="6" fill="#fff" stroke="#1e8e3e" stroke-width="3"/>
-    </svg>
-    <div class="dest-pin" style="left:60px; top:80px;"><div class="badge" id="destBadge">A1</div></div>
-    <div class="here-dot" style="left:160px; top:250px;"></div>
-    <div class="here-label" style="left:130px; top:265px;">You are here</div>
-  </div>
-  <button class="start-btn">↑ Start Navigation</button>
+
+    <div class="side" id="side"></div>
+
 </div>
 
 <script>
-  /* Sample lot data. Replace with data from the simulator / server later. */
-  var lots = [
-    { id:"Rinker",  name:"Rinker Field Lot", left:110, top:70,  free:12, total:20 },
-    { id:"Sage",    name:"Sage Hall Lot",    left:60,  top:230, free:3,  total:30 },
-   { id:"LibN", name:"Library North", left:210, top:315, free:5, total:18 },
-    { id:"LibS",    name:"Library South",    left:340, top:290, free:0,  total:12 },
-    { id:"Hollis",  name:"Hollis Center Lot",left:560, top:120, free:8,  total:15 },
-    { id:"East",    name:"East Lot",         left:800, top:170, free:0,  total:25 },
-    { id:"West1", name:"West Row 1", left:130, top:360, free:10, total:22 },
-    { id:"West2",   name:"West Row 2",       left:340, top:360, free:6,  total:20 },
-    { id:"Stetson", name:"Stetson Hall Lot", left:620, top:250, free:4,  total:16 }
-  ];
 
-  function statusOf(free, total) {
-    if (free === 0) return "full";
-    if (free / total <= 0.3) return "filling";
-    return "free";
-  }
+// the layout from lot_commuter_north.json, put here by the java code
+const LAYOUT = __LAYOUT_JSON__;
 
-  function render() {
-    var box = document.getElementById("pins");
-    box.innerHTML = "";
-    lots.forEach(function (lot) {
-      var status = statusOf(lot.free, lot.total);
-      var cls = status === "free" ? "" : " " + status;
-      // one little square under the pin, colored the same as the badge
-      // (green free, yellow filling up, red full, gray unknown)
-      var square = '<div class="mini-spot' + cls + '"></div>';
+const SVGNS = "http://www.w3.org/2000/svg";
 
-      var pin = document.createElement("div");
-      pin.className = "pin" + cls;
-      pin.style.left = lot.left + "px";
-      pin.style.top = lot.top + "px";
-      pin.innerHTML =
-        '<div class="badge">📍 ' + lot.free + '/' + lot.total + '</div>' +
-        square +
-        '<div class="stem"></div><div class="label">' + lot.name + '</div>';
-      pin.onclick = function () { showNav(lot); };
-      box.appendChild(pin);
+// ---------- sizes. all numbers are map units, 10 units = 1 meter ----------
+const PX_PER_M = 10;
+const STALL_W = 24;      // stall width
+const STALL_STEP = 26;   // stall width + a small gap
+const STALL_H = 32;      // stall depth
+const AISLE_H = 30;      // the lane between two rows
+const PAIR_GAP = 10;     // little gap between one pair of rows and the next
+const PAIR_H = STALL_H + AISLE_H + STALL_H;
+const GATE_X = 85;       // the main drive runs down from the gate at x = 85
+const GATE_Y = 40;
+const BLOCK_X = 140;     // where every lot starts from the left
+const ZONE_GAP = 78;     // space between lots (has to fit the P pill)
+
+// small helper: make an svg element, set its attributes, add it to a parent
+function el(tag, attrs, parent, text) {
+    const e = document.createElementNS(SVGNS, tag);
+    for (const k in attrs) {
+        e.setAttribute(k, attrs[k]);
+    }
+    if (text !== undefined) {
+        e.textContent = text;
+    }
+    if (parent) {
+        parent.appendChild(e);
+    }
+    return e;
+}
+
+function cap(s) {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function dist(a, b) {
+    return Math.hypot(b[0] - a[0], b[1] - a[1]);
+}
+
+// ---------- 1. work out where everything goes (from the layout only) ----------
+
+// stalls by id so clicking / searching can find them fast
+const stalls = {};
+const zones = [];
+
+let cursorY = 110;       // where the next lot starts (top has the road + pill)
+let widest = 0;
+
+LAYOUT.zones.forEach(function (zone) {
+
+    if (zone.rows.length === 0) {
+        return;
+    }
+
+    let perRow = 0;
+    zone.rows.forEach(function (r) {
+        perRow = Math.max(perRow, r.stalls.length);
     });
-  }
 
-  function setUpdated() {
-    var now = new Date();
-    document.getElementById("updatedText").textContent =
-      "Last updated: " + now.toLocaleDateString([], { month: "short", day: "numeric" }) +
-      ", " + now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  }
+    // rows go in pairs with an aisle between them (row 1 + row 2, row 3 + row 4)
+    const pairs = Math.ceil(zone.rows.length / 2);
+    const height = pairs * PAIR_H + (pairs - 1) * PAIR_GAP;
+    const width = perRow * STALL_STEP - (STALL_STEP - STALL_W);
 
-  function refresh() {
-    // placeholder: swap in a fetch to the server's /api/lots later
-    lots.forEach(function (l) { /* no-op for now, sample data only */ });
-    render();
-    setUpdated();
-  }
+    const z = {
+        id: zone.id,
+        rows: zone.rows,
+        x: BLOCK_X,
+        y: cursorY,
+        w: width,
+        h: height,
+        pairs: pairs,
+        aisles: []
+    };
 
-  function showNav(lot) {
-    document.getElementById("mapScreen").style.display = "none";
-    document.getElementById("nav").style.display = "block";
-    document.getElementById("navLotName").textContent = lot.id;
-    document.getElementById("destBadge").textContent = lot.id;
-  }
+    for (let p = 0; p < pairs; p++) {
+        const pairTop = cursorY + p * (PAIR_H + PAIR_GAP);
+        z.aisles.push({
+            y: pairTop + STALL_H + AISLE_H / 2,
+            rowA: zone.rows[2 * p].id,
+            rowB: zone.rows[2 * p + 1] ? zone.rows[2 * p + 1].id : null
+        });
+    }
 
-  function showMap() {
-    document.getElementById("nav").style.display = "none";
-    document.getElementById("mapScreen").style.display = "block";
-  }
+    zone.rows.forEach(function (row, ri) {
+        const pair = Math.floor(ri / 2);
+        const second = (ri % 2 === 1);
+        const pairTop = cursorY + pair * (PAIR_H + PAIR_GAP);
 
-  render();
-  setUpdated();
+        row.stalls.forEach(function (s, si) {
+            stalls[s.id] = {
+                id: s.id,
+                n: s.n,
+                type: s.t,
+                zone: z,
+                row: row.id,
+                pair: pair,
+                x: BLOCK_X + si * STALL_STEP,
+                y: pairTop + (second ? STALL_H + AISLE_H : 0),
+                aisleY: z.aisles[pair].y,
+                belowAisle: second      // second row of a pair sits under the aisle
+            };
+        });
+    });
+
+    zones.push(z);
+    widest = Math.max(widest, width);
+    cursorY += height + ZONE_GAP;
+});
+
+const MAP_W = Math.max(1200, BLOCK_X + widest + 640);
+const MAP_H = cursorY - ZONE_GAP + 70;
+
+// ---------- 2. draw the map background (just scenery) ----------
+
+const svg = document.getElementById("map");
+svg.setAttribute("viewBox", "0 0 " + MAP_W + " " + MAP_H);
+
+// places where trees must not go (roads, lots, buildings...)
+const solid = [];
+
+function keepClear(x, y, w, h) {
+    solid.push([x - 8, y - 8, w + 16, h + 16]);
+}
+
+// grass
+el("rect", { x: 0, y: 0, width: MAP_W, height: MAP_H, fill: "#d4e5c9" }, svg);
+
+// slightly lighter lawn patches so it isn't one flat green
+const lawns = el("g", {}, svg);
+el("ellipse", { cx: MAP_W - 380, cy: 260, rx: 190, ry: 120, fill: "#dcebd2" }, lawns);
+el("ellipse", { cx: MAP_W - 500, cy: MAP_H - 200, rx: 220, ry: 110, fill: "#dcebd2" }, lawns);
+
+const treeLayer = el("g", {}, svg);   // filled in after we know what to avoid
+const roadLayer = el("g", {}, svg);
+const lotLayer = el("g", {}, svg);
+const bldgLayer = el("g", {}, svg);
+const stallLayer = el("g", {}, svg);
+const routeLayer = el("g", { "pointer-events": "none" }, svg);
+
+// the road across the top and the main drive down the left side
+el("rect", { x: 0, y: 0, width: MAP_W, height: 38, fill: "#9aa0a6" }, roadLayer);
+el("rect", { x: 0, y: 36, width: MAP_W, height: 3, fill: "#ffffff", opacity: 0.8 }, roadLayer);
+el("text", { x: MAP_W / 2, y: 24, class: "road-label", "text-anchor": "middle" },
+   roadLayer, "MAIN ROAD");
+keepClear(0, 0, MAP_W, 40);
+
+el("rect", { x: GATE_X - 15, y: 38, width: 30, height: MAP_H - 38, fill: "#9aa0a6" }, roadLayer);
+el("line", { x1: GATE_X, y1: 40, x2: GATE_X, y2: MAP_H, stroke: "#ffffff",
+             "stroke-width": 2, "stroke-dasharray": "10 10", opacity: 0.8 }, roadLayer);
+keepClear(GATE_X - 15, 38, 30, MAP_H);
+
+// the right side: some buildings and walkways (decoration, not from the layout)
+const bx = BLOCK_X + widest + 100;
+
+const buildings = [
+    { x: bx,       y: 100, w: 230, h: 150, label: "Campus Core" },
+    { x: bx + 270, y: 100, w: 170, h: 110, label: "" },
+    { x: bx,       y: 320, w: 150, h: 110, label: "" },
+    { x: bx + 200, y: 300, w: 220, h: 140, label: "" },
+    { x: bx + 40,  y: 530, w: 190, h: 110, label: "" },
+    { x: bx + 300, y: 520, w: 150, h: 120, label: "" }
+];
+
+// walkways from each lot over to the buildings
+const walks = el("g", {}, roadLayer);
+el("rect", { x: bx - 40, y: 90, width: 9, height: MAP_H - 150, fill: "#efe9dd" }, walks);
+keepClear(bx - 40, 90, 9, MAP_H - 150);
+
+zones.forEach(function (z) {
+    const wy = z.y + z.h / 2 - 4;
+    el("rect", { x: z.x + z.w + 10, y: wy, width: bx - (z.x + z.w + 10) - 31,
+                 height: 9, fill: "#efe9dd" }, walks);
+    keepClear(z.x + z.w + 10, wy, bx - (z.x + z.w + 10), 9);
+});
+
+buildings.forEach(function (b) {
+    if (b.y + b.h > MAP_H - 20) {
+        return;
+    }
+    el("rect", { x: b.x + 4, y: b.y + 5, width: b.w, height: b.h, rx: 6,
+                 fill: "#000000", opacity: 0.12 }, bldgLayer);
+    el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6,
+                 fill: "#e3d9cc", stroke: "#b9ac9a", "stroke-width": 2 }, bldgLayer);
+    el("rect", { x: b.x + 14, y: b.y + 14, width: b.w - 28, height: b.h - 28, rx: 4,
+                 fill: "#cfc3b2" }, bldgLayer);
+    if (b.label !== "") {
+        el("text", { x: b.x + b.w / 2, y: b.y + b.h / 2 + 5, class: "label" },
+           bldgLayer, b.label);
+    }
+    keepClear(b.x, b.y, b.w, b.h);
+});
+
+// the lots themselves: pavement, lanes, and the "P" marker pill above each one
+zones.forEach(function (z) {
+
+    // pavement under the whole lot
+    el("rect", { x: z.x - 12, y: z.y - 10, width: z.w + 24, height: z.h + 20, rx: 10,
+                 fill: "#8d9299", stroke: "#ffffff", "stroke-width": 2 }, lotLayer);
+    keepClear(z.x - 12, z.y - 10, z.w + 24, z.h + 20);
+
+    z.aisles.forEach(function (a) {
+        // lane from the main drive into the lot
+        el("rect", { x: GATE_X + 15, y: a.y - AISLE_H / 2, width: z.x - (GATE_X + 15) + 6,
+                     height: AISLE_H, fill: "#8d9299" }, lotLayer);
+        // darker aisle with a dashed center line
+        el("rect", { x: z.x - 6, y: a.y - AISLE_H / 2, width: z.w + 12, height: AISLE_H,
+                     fill: "#868b92" }, lotLayer);
+        el("line", { x1: z.x, y1: a.y, x2: z.x + z.w, y2: a.y, stroke: "#ffffff",
+                     "stroke-width": 1.5, "stroke-dasharray": "8 8", opacity: 0.6 }, lotLayer);
+        keepClear(GATE_X + 15, a.y - AISLE_H / 2, z.x - GATE_X, AISLE_H);
+    });
+
+    // marker pill like the mockup: green-ish P circle + name. it's gray because
+    // we don't know the counts yet (no fake 12/20 numbers)
+    const count = z.rows.reduce(function (sum, r) { return sum + r.stalls.length; }, 0);
+    const label = cap(z.id) + " lot · " + count + " stalls";
+    const pw = 40 + label.length * 7;
+    const pg = el("g", {}, lotLayer);
+    el("rect", { x: z.x - 12, y: z.y - 44, width: pw, height: 28, rx: 14,
+                 fill: "#ffffff", stroke: "#9ca3af", "stroke-width": 1.5 }, pg);
+    el("circle", { cx: z.x + 4, cy: z.y - 30, r: 11, fill: "#6b7280" }, pg);
+    el("text", { x: z.x + 4, y: z.y - 25, "text-anchor": "middle", fill: "#ffffff",
+                 "font-size": 14, "font-weight": "bold" }, pg, "P");
+    el("text", { x: z.x + 22, y: z.y - 25, class: "pill-text" }, pg, label);
+    keepClear(z.x - 12, z.y - 44, pw, 28);
+});
+
+// the gate marker at the top of the main drive
+const gate = el("g", {}, lotLayer);
+el("circle", { cx: GATE_X, cy: GATE_Y, r: 12, fill: "#ffffff", stroke: "#14532d",
+               "stroke-width": 3 }, gate);
+el("text", { x: GATE_X + 20, y: GATE_Y + 5, "font-size": 13, "font-weight": "bold",
+             fill: "#14532d" }, gate, "Main Gate");
+
+// trees: no Random here either. the spots come from a fixed formula so the
+// map looks the same every time
+for (let i = 0; i < 260; i++) {
+    const tx = (i * 149 + 53) % MAP_W;
+    const ty = (i * 97 + i * i * 13) % MAP_H;
+    let blocked = false;
+    for (let k = 0; k < solid.length; k++) {
+        const s = solid[k];
+        if (tx > s[0] && tx < s[0] + s[2] && ty > s[1] && ty < s[1] + s[3]) {
+            blocked = true;
+            break;
+        }
+    }
+    if (!blocked) {
+        const r = 9 + (i % 4) * 2;
+        el("circle", { cx: tx + 2, cy: ty + 3, r: r, fill: "#000000", opacity: 0.1 }, treeLayer);
+        el("circle", { cx: tx, cy: ty, r: r, fill: (i % 3 === 0 ? "#7fae6e" : "#8fbb7d") }, treeLayer);
+    }
+}
+
+// ---------- 3. draw every stall from the layout ----------
+
+const ICON_ADA = String.fromCharCode(9855);   // wheelchair symbol
+const ICON_EV = String.fromCharCode(9889);    // lightning bolt
+
+Object.keys(stalls).forEach(function (id) {
+    const st = stalls[id];
+    const typeClass = "type-" + st.type.toLowerCase();
+
+    // data-id / data-zone / data-type are for DK-3 to find a stall and paint it
+    const g = el("g", { "class": "stall " + typeClass + " unknown",
+                        "data-id": st.id, "data-zone": st.zone.id,
+                        "data-type": st.type }, stallLayer);
+
+    el("title", {}, g, st.id + " · " + st.type + " · " + cap(st.zone.id) + " lot · status unknown");
+    el("rect", { x: st.x, y: st.y, width: STALL_W, height: STALL_H, rx: 3,
+                 "class": "stall-rect" }, g);
+
+    const num = (st.n < 10 ? "0" : "") + st.n;
+
+    if (st.type === "Regular") {
+        el("text", { x: st.x + STALL_W / 2, y: st.y + STALL_H / 2 + 3, "class": "stall-num" }, g, num);
+    } else {
+        el("text", { x: st.x + STALL_W / 2, y: st.y + 14, "class": "stall-icon" },
+           g, st.type === "ADA" ? ICON_ADA : ICON_EV);
+        el("text", { x: st.x + STALL_W / 2, y: st.y + 27, "class": "stall-num" }, g, num);
+    }
+
+    st.node = g;
+    g.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        selectStall(st.id);
+    });
+});
+
+// ---------- 4. the route (like a maps app) ----------
+
+let selectedId = null;
+
+// the path's corners get rounded so it looks like a real route line
+function roundedPath(pts, r) {
+    let d = "M" + pts[0][0] + " " + pts[0][1];
+    for (let i = 1; i < pts.length - 1; i++) {
+        const p0 = pts[i - 1];
+        const p1 = pts[i];
+        const p2 = pts[i + 1];
+        const l1 = dist(p0, p1);
+        const l2 = dist(p1, p2);
+        const rr = Math.min(r, l1 / 2, l2 / 2);
+        const ax = p1[0] + (p0[0] - p1[0]) / l1 * rr;
+        const ay = p1[1] + (p0[1] - p1[1]) / l1 * rr;
+        const bx2 = p1[0] + (p2[0] - p1[0]) / l2 * rr;
+        const by2 = p1[1] + (p2[1] - p1[1]) / l2 * rr;
+        d += " L" + ax + " " + ay + " Q" + p1[0] + " " + p1[1] + " " + bx2 + " " + by2;
+    }
+    const last = pts[pts.length - 1];
+    d += " L" + last[0] + " " + last[1];
+    return d;
+}
+
+// left or right? y goes DOWN on the screen so the sign is flipped
+function turnWord(h, t) {
+    const cross = h[0] * t[1] - h[1] * t[0];
+    return cross < 0 ? "left" : "right";
+}
+
+function unit(a, b) {
+    const l = dist(a, b);
+    return [(b[0] - a[0]) / l, (b[1] - a[1]) / l];
+}
+
+function meters(a, b) {
+    return Math.round(dist(a, b) / PX_PER_M);
+}
+
+// the drawn path: main gate -> down the main drive -> into the lot's aisle ->
+// along the aisle -> into the stall. it's only a drawing of the way in,
+// the real guidance (which stall to send someone to) is T4's job
+function routeFor(st) {
+    const sx = st.x + STALL_W / 2;
+    const sy = st.y + STALL_H / 2;
+
+    const pts = [
+        [GATE_X, GATE_Y],
+        [GATE_X, st.aisleY],
+        [sx, st.aisleY],
+        [sx, sy]
+    ];
+
+    // drop doubled points so nothing has zero length
+    const clean = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+        if (dist(clean[clean.length - 1], pts[i]) > 0.5) {
+            clean.push(pts[i]);
+        }
+    }
+    return clean;
+}
+
+function stepsFor(st, pts) {
+    const aisle = st.zone.aisles[st.pair];
+    const between = aisle.rowB ? "between rows " + aisle.rowA + " and " + aisle.rowB
+                               : "beside row " + aisle.rowA;
+
+    const steps = ["Start at the Main Gate."];
+
+    // pts: gate, bend (main drive -> aisle), end of aisle, stall
+    const gateToBend = pts[1];
+    steps.push("Head straight down the main drive for " + meters(pts[0], gateToBend) + " m.");
+
+    const h1 = unit(pts[0], pts[1]);
+    const t1 = unit(pts[1], pts[2]);
+    steps.push("Turn " + turnWord(h1, t1) + " into the " + cap(st.zone.id) +
+               " lot, onto the aisle " + between + ".");
+    steps.push("Follow the aisle for " + meters(pts[1], pts[2]) + " m.");
+
+    const t2 = unit(pts[2], pts[3]);
+    let note = "";
+    if (st.type === "ADA") {
+        note = " (ADA stall)";
+    }
+    if (st.type === "EV") {
+        note = " (EV charging stall)";
+    }
+    steps.push(st.id + " is on your " + turnWord(t1, t2) + note + ".");
+    return steps;
+}
+
+function clearRoute() {
+    selectedId = null;
+    while (routeLayer.firstChild) {
+        routeLayer.removeChild(routeLayer.firstChild);
+    }
+    Object.keys(stalls).forEach(function (id) {
+        stalls[id].node.classList.remove("selected");
+    });
+    showHelp();
+}
+
+function selectStall(id) {
+    const st = stalls[id];
+    if (!st) {
+        return;
+    }
+
+    clearRouteQuiet();
+    selectedId = id;
+    st.node.classList.add("selected");
+
+    const pts = routeFor(st);
+    const d = roundedPath(pts, 14);
+
+    // white outline, blue line, then moving dashes on top
+    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 10,
+                 "stroke-linecap": "round", "stroke-linejoin": "round" }, routeLayer);
+    el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 6,
+                 "stroke-linecap": "round", "stroke-linejoin": "round" }, routeLayer);
+    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 2,
+                 "stroke-linecap": "round", "class": "route-flow", opacity: 0.8 }, routeLayer);
+
+    // start dot at the gate
+    el("circle", { cx: pts[0][0], cy: pts[0][1], r: 9, fill: "#ffffff",
+                   stroke: "#1a73e8", "stroke-width": 4 }, routeLayer);
+
+    // red pin on the stall
+    const end = pts[pts.length - 1];
+    const pin = el("g", { transform: "translate(" + end[0] + " " + (end[1] - 4) + ")" }, routeLayer);
+    el("path", { d: "M0 0 C-14 -16 -12 -34 0 -34 C12 -34 14 -16 0 0 Z", fill: "#d93025",
+                 stroke: "#ffffff", "stroke-width": 2 }, pin);
+    el("circle", { cx: 0, cy: -22, r: 4.5, fill: "#ffffff" }, pin);
+
+    showRoute(st, pts);
+    scrollToStall(st);
+}
+
+// same as clearRoute but doesn't redraw the help panel (selectStall redraws it)
+function clearRouteQuiet() {
+    while (routeLayer.firstChild) {
+        routeLayer.removeChild(routeLayer.firstChild);
+    }
+    Object.keys(stalls).forEach(function (id) {
+        stalls[id].node.classList.remove("selected");
+    });
+}
+
+// ---------- 5. the side panel ----------
+
+const side = document.getElementById("side");
+
+function clearSide() {
+    while (side.firstChild) {
+        side.removeChild(side.firstChild);
+    }
+}
+
+function add(tag, text, cls) {
+    const e = document.createElement(tag);
+    if (text !== undefined) {
+        e.textContent = text;
+    }
+    if (cls) {
+        e.className = cls;
+    }
+    side.appendChild(e);
+    return e;
+}
+
+function legendRow(color, outline, text) {
+    const row = document.createElement("div");
+    row.className = "legend-row";
+    const sw = document.createElement("div");
+    sw.className = "sw";
+    sw.style.background = color;
+    sw.style.outlineColor = outline;
+    row.appendChild(sw);
+    row.appendChild(document.createTextNode(text));
+    side.appendChild(row);
+}
+
+// what the panel says before anything is clicked
+function showHelp() {
+    clearSide();
+    add("h2", LAYOUT.lot);
+    add("div", "Click any stall to see the way in from the Main Gate.", "sub");
+
+    legendRow("#cfd2d6", "#9ca3af", "Regular stall");
+    legendRow("#c9d8f5", "#2563eb", "ADA stall");
+    legendRow("#e1d3f5", "#7c3aed", "EV charging stall");
+
+    add("div", "Every stall is gray because live free / taken data isn't connected " +
+               "yet. Free and taken colors arrive with the live feed.", "status-note");
+}
+
+// what the panel says once a stall is picked
+function showRoute(st, pts) {
+    clearSide();
+
+    add("h2", st.id);
+    add("div", cap(st.zone.id) + " lot · row " + st.row + " · spot " + st.n, "sub");
+
+    const badges = add("div");
+    const b1 = document.createElement("span");
+    b1.className = "badge" + (st.type === "ADA" ? " ada" : (st.type === "EV" ? " ev" : ""));
+    b1.textContent = st.type;
+    badges.appendChild(b1);
+
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+        total += meters(pts[i - 1], pts[i]);
+    }
+    add("div", "about " + total + " m", "total");
+
+    const ol = add("ol", undefined, "steps");
+    stepsFor(st, pts).forEach(function (text) {
+        const li = document.createElement("li");
+        li.textContent = text;
+        ol.appendChild(li);
+    });
+
+    add("div", "Live status: unknown. This shows the way to the stall, not whether " +
+               "it's free. Check the live status once it's connected.", "status-note");
+
+    const btn = add("button", "Clear route", "btn");
+    btn.addEventListener("click", clearRoute);
+}
+
+// ---------- 6. filter chips + search (just dim stalls, no occupancy) ----------
+
+let filter = "All";
+let query = "";
+
+function countType(t) {
+    let c = 0;
+    Object.keys(stalls).forEach(function (id) {
+        if (stalls[id].type === t) {
+            c++;
+        }
+    });
+    return c;
+}
+
+const chipNames = [
+    { key: "All", text: "All stalls" },
+    { key: "Regular", text: "Regular (" + countType("Regular") + ")" },
+    { key: "ADA", text: "ADA (" + countType("ADA") + ")" },
+    { key: "EV", text: "EV Charging (" + countType("EV") + ")" }
+];
+
+const chipBox = document.getElementById("chips");
+
+function drawChips() {
+    while (chipBox.firstChild) {
+        chipBox.removeChild(chipBox.firstChild);
+    }
+    chipNames.forEach(function (c) {
+        const d = document.createElement("div");
+        d.className = "chip" + (filter === c.key ? " on" : "");
+        d.textContent = c.text;
+        d.addEventListener("click", function () {
+            filter = c.key;
+            drawChips();
+            applyDim();
+        });
+        chipBox.appendChild(d);
+    });
+}
+
+function applyDim() {
+    Object.keys(stalls).forEach(function (id) {
+        const st = stalls[id];
+        let dim = false;
+        if (filter !== "All" && st.type !== filter) {
+            dim = true;
+        }
+        if (query !== "" && id.toUpperCase().indexOf(query) < 0) {
+            dim = true;
+        }
+        st.node.classList.toggle("dim", dim);
+    });
+}
+
+const searchBox = document.getElementById("search");
+
+searchBox.addEventListener("input", function () {
+    query = searchBox.value.trim().toUpperCase();
+    applyDim();
+});
+
+searchBox.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") {
+        const wanted = searchBox.value.trim().toUpperCase();
+        if (stalls[wanted]) {
+            selectStall(wanted);
+        }
+    }
+});
+
+drawChips();
+
+// ---------- 7. zoom + scrolling ----------
+
+const scroller = document.getElementById("scroll");
+let zoom = 1;
+
+function applyZoom() {
+    svg.setAttribute("width", Math.round(MAP_W * zoom));
+    svg.setAttribute("height", Math.round(MAP_H * zoom));
+}
+
+function fit() {
+    // make the whole map fit the box on load
+    zoom = Math.max(0.4, Math.min(1.2, scroller.clientWidth / MAP_W));
+    applyZoom();
+    scroller.scrollLeft = 0;
+    scroller.scrollTop = 0;
+}
+
+function scrollToStall(st) {
+    const cx = (st.x + STALL_W / 2) * zoom;
+    const cy = (st.y + STALL_H / 2) * zoom;
+    scroller.scrollTo({
+        left: Math.max(0, cx - scroller.clientWidth / 2),
+        top: Math.max(0, cy - scroller.clientHeight / 2),
+        behavior: "smooth"
+    });
+}
+
+document.getElementById("zin").addEventListener("click", function () {
+    zoom = Math.min(2.5, zoom + 0.25);
+    applyZoom();
+});
+
+document.getElementById("zout").addEventListener("click", function () {
+    zoom = Math.max(0.4, zoom - 0.25);
+    applyZoom();
+});
+
+document.getElementById("zfit").addEventListener("click", fit);
+
+// click empty map or press Esc to drop the route
+svg.addEventListener("click", clearRoute);
+
+document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") {
+        clearRoute();
+    }
+});
+
+fit();
+showHelp();
+
 </script>
+
 </body>
 </html>
 """;
 
-	public static void main(String[] args) throws Exception {
-
-		System.out.println("starting server...");
-
-		HttpServer myServer = HttpServer.create(new InetSocketAddress(myPort), 0);
-
-		// i used a regular class here instead of the arrow thing (lambda)
-		// because it made more sense to me to write it this way
-		myServer.createContext("/", new MyHandler());
-
-		myServer.start();
-
-		System.out.println("Practice lot running at http://localhost:" + myPort);
-	}
-
-	// this class is what actually sends the webpage back when someone
-	// opens the link in their browser
-	static class MyHandler implements HttpHandler {
-		public void handle(HttpExchange exchange) throws IOException {
-
-			byte[] pageBytes = PAGE.getBytes(StandardCharsets.UTF_8);
-
-			exchange.getResponseHeaders().set("Content-Type", "text/html; charset=utf-8");
-			exchange.sendResponseHeaders(200, pageBytes.length);
-
-			exchange.getResponseBody().write(pageBytes);
-			exchange.getResponseBody().close();
-		}
-	}
+        // fill in the layout json. replace() not formatted() (see note above)
+        return page.replace("__LAYOUT_JSON__", buildLayoutJson(layout));
+    }
 }
-
 
 
 
