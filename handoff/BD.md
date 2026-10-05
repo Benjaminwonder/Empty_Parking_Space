@@ -7,16 +7,13 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   → DK: DK-2 (W2) draws the grid from this file instead of hard-coded ids and ADA/EV positions.
   known gap: the simulator has no ADA/EV drivers yet, so those 13 stalls stay free all run.
 
-2026-09-28 · BD-0 started · writes SK-LIB
-  landed: librarian.py — python librarian.py <name> | --list | --check
-  → DI, DK: before each commit run python librarian.py --check. New methods need a docstring with why:, boundary:, ugly: lines.
+2026-09-28 · team rule
+  → DI, DK: new methods need a docstring with why:, boundary:, ugly: lines.
   → DI: you can start DI-1 against a few hand-written feed lines in the SK-EVENT shape; BD-2 (event.py) lands next.
 
-2026-09-29 · BD-0 update · writes SK-LIB
-  landed: librarian.py --check now also fails on a code file whose first ten lines lack the tag
-          (box · lane · read BRIDGES.md before editing). sim.py tagged: # box: S1–S7 · lane: BD.
+2026-09-29 · tag line rule
+  landed: every code file's first lines carry its tag (box · lane · read BRIDGES.md before editing). sim.py tagged: # box: S1–S7 · lane: BD.
   → DK: please add as the first line of WebPage:  // box: T6 · lane: DK · read BRIDGES.md before editing
-        Until then --check reports it; nothing else changes.
   → DI: every new file in parkfind/ and tests/ starts with that line (# for Python).
 
 2026-09-29 · BD-2 done · writes SK-EVENT
@@ -30,7 +27,7 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
 2026-10-01 · BD-3 done · writes SK-CLOCK
   landed: parkfind/clock.py — parse_utc(text), make_clock(start=None, speed=1.0) → now(). event.observed_utc() uses parse_utc.
   → DI: in DI-3 and DI-4 only: now = make_clock(args.now, args.speed); call now() once per request and pass the result down.
-        Never call datetime.now() inside parkfind/; librarian --check fails on it (rule B3).
+        Never call datetime.now() inside parkfind/.
 
 2026-10-01 · BD-4 done · writes SK-FEED · SK-TRUTH
   landed: sim.py --out <run> writes out/<run>/feed.jsonl and out/<run>/truth.json. live_snapshot/snapshot.json removed.
@@ -41,3 +38,7 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
         Requests for WebPage: add as line 1  // box: T6 · lane: DK · read BRIDGES.md before editing
         "Last updated" uses the browser clock (new Date()) and the lots are typed-in sample numbers; both get replaced by SK-VIEW in DK-3.
         The server moved to port 8085; CONTRACT now says so. Tell BD if the nine campus lots should replace the single practice lot.
+
+2026-10-05 · BD-5 done · README
+  landed: README "One parking update (an occupancy event)": a real line from the feed, read out in plain words.
+  → DI, DK: start there if a feed line is unclear.

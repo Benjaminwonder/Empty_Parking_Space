@@ -78,24 +78,25 @@ adapters (sim | vision | sensors | gates | APIs | scrapes | reports)
 
 Adapters are swappable. The product is the event + the guidance rule, not a particular camera brand.
 
-### Canonical event
+### One parking update (an occupancy event)
+
+Every sensor (today the simulator, later a camera) reports in this one shape:
 
 ```json
-{
-  "stall_id": "A-114",
-  "zone_id": "deck-2-west",
-  "state": "free",
-  "confidence": 0.86,
-  "source": "cctv.cam-04",
-  "observed_at": "2026-09-16T14:02:11Z",
-  "ttl": "12s",
-  "cadence_class": "continuous"
-}
+{"state": "free", "confidence": 0.97, "source": "sim.continuous",
+ "observed_at": "2026-09-21T11:45:00Z", "ttl": "15s", "cadence_class": "continuous",
+ "stall_id": "N2-06", "zone_id": "near", "lot_id": "commuter_north"}
 ```
 
-`state` is one of: `free` | `occupied` | `reserved` | `out_of_service` | `unknown`.
+Read it as: stall N2-06 in the near zone was seen free at 7:45 a.m. lot time
+(11:45 UTC), by a live sensor that is 97% sure, and that claim is good for 15 seconds.
 
-`unknown ≠ free`. A 5-minute lot feed does not get a 4-second TTL.
+- `state`: free · occupied · reserved · out_of_service · unknown. Unknown is never free.
+- `observed_at`: when the sensor saw it, always UTC. Age = now − observed_at.
+- `ttl`: how long the claim stays true. Past it, the stall becomes unknown.
+- Zone reports carry `free_count` / `total_count` instead of a `stall_id`; gate reports name only the lot.
+
+The format and its rules live in `parkfind/event.py`.
 
 ---
 

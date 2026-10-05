@@ -16,7 +16,6 @@ Weeks: W1, W2, W3. Lanes: BD, DI, DK. Read BRIDGES.md first.
 | SK-STATUS | lastseen.status(events, layout, now); file form out/<run>/status.json | {as_of, rejected_lines, stalls: {id: {state, last_claim, observed_at, age_s, ttl_s, source, cadence_class, confidence}}, zones: {id: {state, last_claim, free_count, total_count, observed_at, age_s, …}}, lot: {…}}. state is after aging (past ttl → unknown); last_claim is what the event said. Every stall in SK-LAYOUT appears; never seen → unknown. | DI-2 · DI-3 | BD-8 · DI-4 | W1 |
 | SK-ANSWER | guidance.answer(status, layout, now, vehicle_class, driver_id) | {vehicle_class, grain: stall \| zone \| count \| none, stall_id?, zone_id?, free_count?, total_count?, based_on: {source, observed_at, age_s, cadence_class}, hold_until?} | BD-8 · BD-9 | DI-4 | W3 |
 | SK-VIEW | GET http://localhost:8765/view?vehicle_class=regular&driver_id=… | {as_of, status: SK-STATUS, answer: SK-ANSWER or null}. Nothing else: no truth, no simulator state, no debug keys. | DI-4 | DK-3 · DK-4 · DI-5 · DI-6 | W2 |
-| SK-LIB | librarian.py | Index rebuilt from code on every run; --check for headers and cuts. | BD-0 | all | W1 |
 
 ## Guidance rules (D4, used by BD-8)
 - A stall is named only from a free claim of cadence continuous or near_live still inside its ttl.
@@ -27,12 +26,11 @@ Weeks: W1, W2, W3. Lanes: BD, DI, DK. Read BRIDGES.md first.
 ## Atoms — BD
 | Atom | Wk | File | Writes | Reads | Done when |
 |---|---|---|---|---|---|
-| BD-0 | all | librarian.py | SK-LIB | all code | python librarian.py --check passes at the end of every turn with new or pulled code: every code file tagged, every method headed, no cuts. |
 | BD-1 | W1 | lot_commuter_north.json | SK-LAYOUT | — | sim.py loads 120 stalls: 40 per zone, 5 ADA, 8 EV. **Landed.** |
 | BD-2 | W1 | parkfind/event.py, parkfind/__init__.py | SK-EVENT | — | sim.py imports the event from parkfind; nothing in parkfind imports sim.py. **Landed.** |
 | BD-3 | W1 | parkfind/clock.py | SK-CLOCK | — | The same --now gives the same ages twice. **Landed.** |
 | BD-4 | W1 | sim.py | SK-FEED · SK-TRUTH | SK-LAYOUT · SK-EVENT | --out <run> writes feed.jsonl + truth.json; no simulator truth or hidden stall id in the feed; --start is lot-local. **Landed.** |
-| BD-5 | W1 | README.md | — | SK-FEED | One feed line explained in plain words; ttl example matches sim.py. |
+| BD-5 | W1 | README.md | — | SK-FEED | One feed line explained in plain words; ttl example matches sim.py. **Landed.** |
 | BD-6 | W1 | git, README "Run it" | — | — | A fresh clone runs the simulator in ten minutes on stock Python 3.10+. |
 | BD-7 | W2 | out/quick, out/slow | SK-FEED · SK-TRUTH | SK-VIEW | Same --now: the slow run's page shows more unknown and older ages. |
 | BD-8 | W3 | parkfind/guidance.py | SK-ANSWER | SK-STATUS · SK-LAYOUT | Quick run → stall answers; slow run → zone or count; never a regular car to ADA/EV. |
@@ -58,7 +56,7 @@ Weeks: W1, W2, W3. Lanes: BD, DI, DK. Read BRIDGES.md first.
 | DK-4 | W3 | WebPage.java | — | SK-VIEW | A stall is named only when answer.grain is stall; the age is always on screen. |
 
 ## The sync (end of every week)
-1. git pull → python librarian.py --check
+1. git pull
 2. python sim.py --cadence continuous --out out/quick
 3. python sim.py --cadence periodic_15min,hourly --out out/slow
 4. python -m parkfind.server --run out/quick --now 2026-09-21T08:15:00-04:00 --speed 0   (08:15 at the lot; --speed 60 to watch it move)

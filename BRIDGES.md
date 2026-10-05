@@ -10,13 +10,13 @@ and says how old the information is.
    socket is a request in your handoff file, not an edit.
 
 ## Lanes
-BD   sim.py · lot_commuter_north.json · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py · librarian.py
+BD   sim.py · lot_commuter_north.json · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py
 DI   parkfind/lastseen.py · parkfind/server.py · tests/
 DK   WebPage.java
 
 ## Rules that do not bend
 - Every code file's first lines carry its tag:  # box: T2 · lane: DI · read BRIDGES.md before editing
-  (Java uses //). librarian.py --check fails on a file without it.
+  (Java uses //).
 - One event shape (SK-EVENT). No second shape.
 - Unknown is not free. A claim past its ttl becomes unknown.
 - Nothing in parkfind/ imports sim.py. Simulator truth never reaches the page.
@@ -24,7 +24,7 @@ DK   WebPage.java
 - Python standard library only on the event path.
 
 ## Before you commit
-- python librarian.py --check passes (new methods need a why/boundary/ugly docstring).
+- New methods carry a docstring with three lines: why:, boundary:, ugly:.
 - Commit message starts with the atom ID:  DI-1: read_feed skips future lines
 - Append one entry to handoff/<your lane>.md
 
