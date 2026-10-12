@@ -10,7 +10,7 @@ and says how old the information is.
    socket is a request in your handoff file, not an edit.
 
 ## Lanes
-BD   sim.py · lot_commuter_north.json · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py
+BD   sim.py · vision.py · campus.json · cameras/ · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py
 DI   parkfind/lastseen.py · parkfind/server.py · tests/
 DK   WebPage.java
 
@@ -21,7 +21,8 @@ DK   WebPage.java
 - Unknown is not free. A claim past its ttl becomes unknown.
 - Nothing in parkfind/ imports sim.py. Simulator truth never reaches the page.
 - The page invents nothing: every colour, count and age comes from SK-VIEW.
-- Python standard library only on the event path.
+- Python standard library only on the event path. The one exception is vision.py (the image adapter),
+  which may use Pillow and NumPy. Nothing in parkfind/ imports them.
 
 ## Before you commit
 - New methods carry a docstring with three lines: why:, boundary:, ugly:.

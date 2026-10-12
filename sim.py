@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # box: S1–S7 · lane: BD · read BRIDGES.md before editing
 """
-ParkFind simulator: a fake lot (World) plus fake sensors (Adapters).
+ParkFind simulator: a fake campus of lots (one World each) plus fake sensors (Adapters).
 
 Why this exists
 ---------------
@@ -18,16 +18,20 @@ Mental model (two layers, do not collapse them)
 The rest of ParkFind only ever sees occupancy events (parkfind/event.py),
 the same shape a camera, a gate counter or a 15-minute scrape will write later.
 
+The campus layout (campus.json) lists nine lots, 200 stalls. Each lot names the
+sensors it has, so one morning mixes live cameras, slow snapshots and a gate counter.
+
 Each run writes one folder:
   out/<run>/feed.jsonl   the events, one per line: what the trunk reads
   out/<run>/truth.json   what was really true each tick: tests only, never the trunk
 
 Run (from this folder):
   python sim.py
-  python sim.py --cadence continuous --out out/quick
-  python sim.py --cadence periodic_15min,hourly --out out/slow
+  python sim.py --cadence continuous --out out/quick          (every lot gets a live camera)
+  python sim.py --cadence periodic_15min,hourly --out out/slow (every lot gets slow feeds)
   python sim.py --start 2026-09-21T06:30:00 --minutes 180 --tick 30
 
+Without --cadence, each lot uses its own sensors from campus.json.
 Times: --start is lot-local time (the layout's utc_offset). Events are stamped in UTC.
 
 What this file does NOT do: YOLO, holds, aisle routing, a driver app.
@@ -50,13 +54,13 @@ from parkfind.clock import parse_utc
 from parkfind.event import Cadence, OccupancyEvent, State
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_LOT = HERE / "lot_commuter_north.json"
+DEFAULT_CAMPUS = HERE / "campus.json"
 
 
 # TTL is a function of cadence. A 5-minute poll does not get a 4-second TTL.
 # These are simulated-sensor policy; a real adapter sets its own.
 TTL_BY_CADENCE = {
-    "continuous": "15s",
+    "continuous": "90s",   # a live camera re-reports every stall each minute; 90s survives one missed beat
     "near_live": "90s",
     "periodic_snapshot": "8m",
     "slow_snapshot": "75m",
@@ -86,30 +90,36 @@ class Stall:
     occupied_until: datetime | None = None
 
 
-def load_lot(path: Path) -> tuple[dict, list[Stall]]:
-    """why: turn the one layout file (L0) into the stalls the World moves cars in and out of.
-    boundary: reads the layout only; invents no stalls and no defaults for missing keys.
-    ugly: an ADA or EV id that matches no generated stall is a typo in L0 and stops the run.
+def load_campus(path: Path) -> tuple[dict, list[tuple[dict, list[Stall]]]]:
+    """why: turn the one campus layout (L0) into each lot's stalls, with ids no two lots can share.
+    boundary: reads the layout only; invents no stalls, sensors or defaults for missing keys.
+    ugly: a special stall, sensor or lot id that does not fit is a typo in L0 and stops the run.
     """
-    spec = json.loads(path.read_text(encoding="utf-8"))
-    special_ada = set(spec.get("special_stalls", {}).get("ada", []))
-    special_ev = set(spec.get("special_stalls", {}).get("ev", []))
-    stalls: list[Stall] = []
-    for zone in spec["zones"]:
-        for row in zone["rows"]:
-            for n in range(1, zone["stalls_per_row"] + 1):
-                sid = f"{row}-{n:02d}"
-                if sid in special_ada:
-                    constraint = "ada"
-                elif sid in special_ev:
-                    constraint = "ev"
-                else:
-                    constraint = "any"
-                stalls.append(Stall(sid, zone["zone_id"], row, constraint))
-    unknown = (special_ada | special_ev) - {s.stall_id for s in stalls}
-    if unknown:
-        raise SystemExit(f"{path.name}: special_stalls lists ids that are not in the lot: {sorted(unknown)}")
-    return spec, stalls
+    campus = json.loads(path.read_text(encoding="utf-8"))
+    lots: list[tuple[dict, list[Stall]]] = []
+    seen_ids: set[str] = set()
+    for lot in campus["lots"]:
+        lid = lot["lot_id"]
+        if lid in seen_ids or ":" in lid:
+            raise SystemExit(f"{path.name}: lot_id {lid!r} is repeated or contains ':'")
+        seen_ids.add(lid)
+        bad = [x for x in lot["sensors"] if x not in CADENCE_PRESETS]
+        if bad:
+            raise SystemExit(f"{path.name}: lot {lid} has unknown sensors {bad}; choose from {list(CADENCE_PRESETS)}")
+        special_ada = set(lot["special_stalls"].get("ada", []))
+        special_ev = set(lot["special_stalls"].get("ev", []))
+        stalls: list[Stall] = []
+        for row in lot["rows"]:
+            for n in range(1, lot["stalls_per_row"] + 1):
+                local = f"{row}-{n:02d}"
+                constraint = "ada" if local in special_ada else "ev" if local in special_ev else "any"
+                # Each row is a zone, so guidance can say "row B at Sage Hall".
+                stalls.append(Stall(f"{lid}:{local}", f"{lid}:{row}", row, constraint))
+        unknown = (special_ada | special_ev) - {s.stall_id.split(":", 1)[1] for s in stalls}
+        if unknown:
+            raise SystemExit(f"{path.name}: lot {lid} special_stalls not in the lot: {sorted(unknown)}")
+        lots.append((lot, stalls))
+    return campus, lots
 
 
 def lot_tz(spec: dict) -> tzinfo:
@@ -130,13 +140,16 @@ def lot_tz(spec: dict) -> tzinfo:
 # ---------------------------------------------------------------------------
 
 class World:
-    """Discrete-time commuter lot. Prefer nearer zones. Skip ADA/EV for regular cars."""
+    """Discrete-time commuter lot, one per lot. Prefer rows nearer the entrance. Skip ADA/EV for regular cars."""
 
-    def __init__(self, spec: dict, stalls: list[Stall], seed: int = 7):
-        self.spec = spec
-        self.lot_id = spec["lot_id"]
+    def __init__(self, lot: dict, stalls: list[Stall], seed: int = 7):
+        self.lot = lot
+        self.lot_id = lot["lot_id"]
         self.stalls = {s.stall_id: s for s in stalls}
-        self.zone_order = [z["zone_id"] for z in sorted(spec["zones"], key=lambda z: z["fill_priority"])]
+        # Row order in the layout is distance from the entrance: row A fills first.
+        self.zone_order = [f"{self.lot_id}:{row}" for row in lot["rows"]]
+        # Arrivals were tuned for a 120-stall lot; scale by size and by how popular this lot is.
+        self.demand_scale = len(stalls) / 120.0 * float(lot.get("demand", 1.0))
         self.rng = random.Random(seed)
         self.arrivals = 0
         self.departures = 0
@@ -182,6 +195,7 @@ class World:
         """why: a weekday commuter shape (steep 7–9, then taper), scaled to the tick length.
         boundary: pure function of the lot-local hour; touches no state.
         ugly: t must be lot-local; a UTC time here would put the morning rush four hours late.
+        Scaled by lot size and demand, so a 14-stall lot does not get a 120-stall lot's traffic.
         """
         hour = t.hour + t.minute / 60.0
         # cars per hour targeting this 120-stall lot
@@ -197,7 +211,7 @@ class World:
             per_hour = 14
         else:
             per_hour = 6
-        return per_hour * (tick_s / 3600.0)
+        return per_hour * self.demand_scale * (tick_s / 3600.0)
 
     def stay_minutes(self) -> int:
         """why: a mix of all-day commuters and short class hops, so stalls actually flip back to free.
@@ -256,34 +270,42 @@ class Adapter:
 
 
 class ContinuousAdapter(Adapter):
-    """Stall-level. Emits only on flips. This is the 'we have a live lot camera' case."""
+    """Stall-level. Reports changes the moment they happen, plus every stall once a minute. The live-camera case."""
 
     cadence_class: Cadence = "continuous"
     source = "sim.continuous"
+    HEARTBEAT_S = 60
+
+    def __init__(self) -> None:
+        self._last_beat: datetime | None = None
 
     def emit(self, world: World, t: datetime) -> list[OccupancyEvent]:
-        """why: the live-camera case: one stall event each time a stall changes.
-        boundary: reads last_flips and stall zones; writes nothing back to the World.
-        ugly: a stall that never changes is never reported, so a reader cannot tell 'still free' from 'never seen'.
+        """why: a live camera sees every stall all the time, so its claims must stay fresh, not just its changes.
+        boundary: reads last_flips and stall states; writes nothing back to the World.
+        ugly: reporting changes only (the old way) let an unchanged stall expire to unknown 15s later,
+        so the most certain lots looked the least certain. A heartbeat tick reports every stall, which already includes the flips.
         """
-        events = []
+        beat = self._last_beat is None or (t - self._last_beat).total_seconds() >= self.HEARTBEAT_S
+        if beat:
+            self._last_beat = t
+            reported = [(s.stall_id, s.true_state) for s in world.stalls.values()]
+        else:
+            reported = [(stall_id, new) for stall_id, _old, new in world.last_flips]
         iso = _iso(t)
-        for stall_id, _old, new in world.last_flips:
-            stall = world.stalls[stall_id]
-            events.append(
-                OccupancyEvent(
-                    stall_id=stall_id,
-                    zone_id=stall.zone_id,
-                    lot_id=world.lot_id,
-                    state=new,
-                    confidence=CONFIDENCE_BY_CADENCE[self.cadence_class],
-                    source=self.source,
-                    observed_at=iso,
-                    ttl=TTL_BY_CADENCE[self.cadence_class],
-                    cadence_class=self.cadence_class,
-                )
+        return [
+            OccupancyEvent(
+                stall_id=stall_id,
+                zone_id=world.stalls[stall_id].zone_id,
+                lot_id=world.lot_id,
+                state=state,
+                confidence=CONFIDENCE_BY_CADENCE[self.cadence_class],
+                source=self.source,
+                observed_at=iso,
+                ttl=TTL_BY_CADENCE[self.cadence_class],
+                cadence_class=self.cadence_class,
             )
-        return events
+            for stall_id, state in reported
+        ]
 
 
 class SnapshotAdapter(Adapter):
@@ -406,28 +428,39 @@ CADENCE_PRESETS = {
 }
 
 
-def truth_row(world: World, t: datetime) -> dict:
-    """why: one tick of what was really true, so tests can check an answer against reality.
+def truth_row(worlds: list[World], t: datetime) -> dict:
+    """why: one tick of what was really true in every lot, so tests can check an answer against reality.
     boundary: goes only to truth.json; nothing here is ever written into the feed.
-    ugly: the trunk must never open truth.json; the librarian's B2 rule fails any file that tries.
+    ugly: the trunk must never open truth.json; tests are the only readers.
     """
-    zones = world.counts()["zones"]
-    return {
-        "t": _iso(t),
-        "stalls": {sid: s.true_state for sid, s in world.stalls.items()},
-        "zones": {zid: {"free": z["free"], "occupied": z["occupied"], "total": z["total"]} for zid, z in zones.items()},
-    }
+    lots = {}
+    for w in worlds:
+        c = w.counts()
+        lots[w.lot_id] = {
+            "free": c["free"],
+            "total": c["total"],
+            "stalls": {sid: s.true_state for sid, s in w.stalls.items()},
+            "zones": {zid: {"free": z["free"], "occupied": z["occupied"], "total": z["total"]}
+                      for zid, z in c["zones"].items()},
+        }
+    return {"t": _iso(t), "lots": lots}
 
 
-def run(lot_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s: int,
-        cadence_names: list[str], seed: int) -> dict:
-    """why: play one simulated morning and write its two files: the feed and the truth.
+def run(campus_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s: int,
+        cadence_override: list[str] | None, seed: int) -> dict:
+    """why: play one simulated morning across every lot and write its two files: the feed and the truth.
     boundary: writes only inside out_dir; the feed gets adapter events, the truth file gets World state.
-    ugly: re-running into the same out_dir overwrites it, so quick and slow runs need different folders.
+    ugly: each lot gets its own seed (seed + position), so adding a lot changes no other lot's morning.
     """
-    spec, stalls = load_lot(lot_path)
-    world = World(spec, stalls, seed=seed)
-    adapters = [CADENCE_PRESETS[name]() for name in cadence_names]
+    campus, lots = load_campus(campus_path)
+    worlds: list[World] = []
+    adapters: list[tuple[World, Adapter]] = []
+    for i, (lot, stalls) in enumerate(lots):
+        w = World(lot, stalls, seed=seed + i)
+        worlds.append(w)
+        # One adapter instance per lot and sensor: snapshot adapters remember when they last fired.
+        for name in cadence_override or lot["sensors"]:
+            adapters.append((w, CADENCE_PRESETS[name]()))
 
     out_dir.mkdir(parents=True, exist_ok=True)
     feed_path = out_dir / "feed.jsonl"
@@ -437,40 +470,37 @@ def run(lot_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s: in
     truth_ticks: list[dict] = []
     t = start
     end = start + timedelta(minutes=minutes)
-    printed_hhmm: set[str] = set()
 
     with feed_path.open("w", encoding="utf-8", newline="\n") as feed:
         while t <= end:
-            world.step(t, tick_s)
+            for w in worlds:
+                w.step(t, tick_s)
             batch: list[OccupancyEvent] = []
-            for ad in adapters:
-                batch.extend(ad.emit(world, t))
+            for w, ad in adapters:
+                batch.extend(ad.emit(w, t))
             for e in batch:
                 feed.write(json.dumps(e.to_json()) + "\n")
             all_events.extend(batch)
-            truth_ticks.append(truth_row(world, t))
+            truth_ticks.append(truth_row(worlds, t))
 
-            hhmm = t.strftime("%H:%M")
             minutes_from_start = int((t - start).total_seconds() // 60)
-            if minutes_from_start % 15 == 0 and t.second == 0 and hhmm not in printed_hhmm:
-                printed_hhmm.add(hhmm)
-                c = world.counts()
-                z = c["zones"]
-                print(
-                    f"{hhmm}  occ {c['occupied']:3d}/{c['total']}   "
-                    + "  ".join(f"{zid}:{z[zid].get('occupied', 0)}/{z[zid]['total']}" for zid in world.zone_order)
-                    + f"   events_so_far={len(all_events)}"
-                )
+            if minutes_from_start % 30 == 0 and t.second == 0:
+                occ = sum(w.counts()["occupied"] for w in worlds)
+                total = sum(len(w.stalls) for w in worlds)
+                print(f"{t.strftime('%H:%M')}  occ {occ:3d}/{total}   "
+                      + " ".join(f"{w.lot_id}:{w.counts()['occupied']}/{len(w.stalls)}" for w in worlds))
             t += timedelta(seconds=tick_s)
 
-    truth = {"lot_id": world.lot_id, "tick_s": tick_s, "utc_offset": spec["utc_offset"], "ticks": truth_ticks}
+    truth = {"campus_id": campus["campus_id"], "tick_s": tick_s, "utc_offset": campus["utc_offset"], "ticks": truth_ticks}
     truth_path.write_text(json.dumps(truth, separators=(",", ":")), encoding="utf-8")
     return {
         "feed_path": str(feed_path),
         "truth_path": str(truth_path),
         "event_count": len(all_events),
-        "arrivals": world.arrivals,
-        "departures": world.departures,
+        "lots": len(worlds),
+        "stalls": sum(len(w.stalls) for w in worlds),
+        "arrivals": sum(w.arrivals for w in worlds),
+        "departures": sum(w.departures for w in worlds),
         "by_source": _count_by(all_events, "source"),
         "by_cadence": _count_by(all_events, "cadence_class"),
     }
@@ -504,9 +534,9 @@ def main() -> None:
     ugly: a relative --out is placed under this repo folder, so a run from another directory still lands in out/.
     """
     p = argparse.ArgumentParser(description="ParkFind occupancy-event simulator")
-    p.add_argument("--lot", default=str(DEFAULT_LOT))
-    p.add_argument("--cadence", default="continuous,periodic_5min,hourly,event_only",
-                   help="comma list: continuous,periodic_5min,periodic_15min,hourly,event_only")
+    p.add_argument("--campus", default=str(DEFAULT_CAMPUS))
+    p.add_argument("--cadence", default=None,
+                   help="override every lot's sensors, comma list: continuous,periodic_5min,periodic_15min,hourly,event_only")
     p.add_argument("--out", default="out/latest", help="run folder for feed.jsonl and truth.json (default out/latest)")
     p.add_argument("--minutes", type=int, default=180, help="simulated minutes from --start")
     p.add_argument("--tick", type=int, default=30, help="world tick seconds")
@@ -514,22 +544,22 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=7)
     args = p.parse_args()
 
-    names = [n.strip() for n in args.cadence.split(",") if n.strip()]
-    unknown = [n for n in names if n not in CADENCE_PRESETS]
+    names = [n.strip() for n in args.cadence.split(",") if n.strip()] if args.cadence else None
+    unknown = [n for n in names or [] if n not in CADENCE_PRESETS]
     if unknown:
         raise SystemExit(f"unknown cadence {unknown}. choose from {list(CADENCE_PRESETS)}")
-    lot_path = Path(args.lot)
-    spec, _ = load_lot(lot_path)
-    start = parse_start(args.start, lot_tz(spec))
+    campus_path = Path(args.campus)
+    campus, _ = load_campus(campus_path)
+    start = parse_start(args.start, lot_tz(campus))
     out_dir = Path(args.out) if Path(args.out).is_absolute() else HERE / args.out
 
-    print(f"lot={lot_path.name}  out={out_dir.relative_to(HERE) if out_dir.is_relative_to(HERE) else out_dir}")
+    print(f"campus={campus_path.name}  out={out_dir.relative_to(HERE) if out_dir.is_relative_to(HERE) else out_dir}")
     print(f"window={start.isoformat()} (= {_iso(start)}) +{args.minutes}m  tick={args.tick}s  seed={args.seed}")
-    print(f"cadences={names}")
+    print(f"sensors={'every lot: ' + ','.join(names) if names else 'per lot, from ' + campus_path.name}")
     print()
-    result = run(lot_path, out_dir, start, args.minutes, args.tick, names, args.seed)
+    result = run(campus_path, out_dir, start, args.minutes, args.tick, names, args.seed)
     print()
-    print(f"arrivals={result['arrivals']}  departures={result['departures']}  events={result['event_count']}")
+    print(f"lots={result['lots']}  stalls={result['stalls']}  arrivals={result['arrivals']}  departures={result['departures']}  events={result['event_count']}")
     print(f"by_source    {result['by_source']}")
     print(f"by_cadence   {result['by_cadence']}")
     print(f"feed         {result['feed_path']}")

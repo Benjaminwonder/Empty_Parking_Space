@@ -48,6 +48,46 @@ You  →  filter constraints (ADA / EV / height / vehicle)
 
 ---
 
+## Run it (about ten minutes)
+
+You need Python 3.10 or newer. Nothing else to install.
+
+```
+git clone https://github.com/Benjaminwonder/Empty_Parking_Space.git
+cd Empty_Parking_Space
+python --version
+python sim.py
+```
+
+On Windows, if `python` is not found, use `py`.
+
+You should see one line every 30 simulated minutes, 06:30 to 09:30 lot time, showing how full
+each of the nine lots is, ending with `lots=9  stalls=200  arrivals=166  departures=21  events=14187`.
+The run writes:
+
+- `out/latest/feed.jsonl`: the sensor reports, one per line (what ParkFind reads)
+- `out/latest/truth.json`: what was really true each tick (tests only)
+
+Two runs the team uses:
+
+```
+python sim.py --cadence continuous --out out/quick
+python sim.py --cadence periodic_15min,hourly --out out/slow
+```
+
+Without `--cadence`, each lot uses its own sensors from `campus.json`: some live cameras, some
+slow snapshots, one gate counter. With it, every lot gets the same sensor: the first line gives the
+whole campus live cameras, the second only slow feeds. Same morning, very different certainty.
+
+Where things live:
+
+- `sim.py`: the fake lot and its fake sensors
+- `campus.json`: the nine lots (200 stalls) everyone reads
+- `parkfind/`: the program itself: `event.py` (the update format), `clock.py` (what time it is)
+- `BRIDGES.md` and `handoff/`: how the team splits and hands off work
+
+---
+
 ## Features
 
 - **Honest guidance, not a fake live map.** Recommendation shrinks from stall → row → zone as the observation ages.
@@ -84,12 +124,12 @@ Every sensor (today the simulator, later a camera) reports in this one shape:
 
 ```json
 {"state": "free", "confidence": 0.97, "source": "sim.continuous",
- "observed_at": "2026-09-21T11:45:00Z", "ttl": "15s", "cadence_class": "continuous",
- "stall_id": "N2-06", "zone_id": "near", "lot_id": "commuter_north"}
+ "observed_at": "2026-09-21T12:06:30Z", "ttl": "90s", "cadence_class": "continuous",
+ "stall_id": "sage:B-01", "zone_id": "sage:B", "lot_id": "sage"}
 ```
 
-Read it as: stall N2-06 in the near zone was seen free at 7:45 a.m. lot time
-(11:45 UTC), by a live sensor that is 97% sure, and that claim is good for 15 seconds.
+Read it as: stall B-01 in row B of the Sage Hall Lot was seen free at 8:06:30 a.m. lot time
+(12:06:30 UTC), by a live camera that is 97% sure, and that claim is good for 90 seconds.
 
 - `state`: free · occupied · reserved · out_of_service · unknown. Unknown is never free.
 - `observed_at`: when the sensor saw it, always UTC. Age = now − observed_at.
@@ -182,7 +222,7 @@ Discovery → Spec → Simulator MVP → One real sensor adapter
          → Thin driver app → One-lot pilot → Multi-lot
 ```
 
-**Now:** Spec. The README is the public shape of the idea. Code starts with a simulator that can lie to us on purpose (late snapshots, two drivers, a stall that flips after assign).
+**Now:** Simulator MVP. The simulator writes the event feed; the reader that ages it is landing next.
 
 ---
 
@@ -214,6 +254,15 @@ If it does not get a driver to stop circling — or teach us how — it is not t
 
 ---
 
+## Data credits
+
+Test photos come from the PKLot dataset (CC BY 4.0): P. R. L. de Almeida, L. S. Oliveira,
+A. S. Britto Jr., E. J. Silva Jr. and A. L. Koerich, "PKLot – A robust dataset for parking lot
+classification", Expert Systems with Applications 42(11), 2015. The photos are not stored in
+this repository; each person downloads them into `data/` (ignored by git).
+
+---
+
 ## Privacy and access
 
 Prefer edge inference and occupancy events over stored video. Do not invent legal authority to scrape, tap cameras, or reserve stalls we do not control. ADA / EV constraints are first-class.
@@ -222,7 +271,7 @@ Prefer edge inference and occupancy events over stored video. Do not invent lega
 
 ## Status
 
-Private founding spec. No public demo yet. First runnable artifact will be the simulator, not a camera.
+Private founding spec. No public demo yet. The simulator runs; see Run it.
 
 Inspired in README shape by [thebkht/smart-parking-system](https://github.com/thebkht/smart-parking-system). Product question is ParkFind’s, not theirs.
 

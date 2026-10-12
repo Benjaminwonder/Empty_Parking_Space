@@ -2,3 +2,5 @@ Fullpicture/
 out/
 __pycache__/
 librarian.py
+data/
+

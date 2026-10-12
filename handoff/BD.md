@@ -42,3 +42,23 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
 2026-10-05 · BD-5 done · README
   landed: README "One parking update (an occupancy event)": a real line from the feed, read out in plain words.
   → DI, DK: start there if a feed line is unclear.
+
+2026-10-05 · BD-6 done · README
+  landed: README "Run it (about ten minutes)": clone, python sim.py, expected output, the quick and slow runs, where things live.
+          "Current phase" and "Status" now say the simulator runs.
+  → DI, DK: if those steps fail on your machine, say so here.
+
+2026-10-05 · BD-1/BD-4 redo · writes SK-LAYOUT · SK-FEED · SK-TRUTH
+  landed: campus.json replaces lot_commuter_north.json: DK's nine lots, 200 stalls, each with its own sensors.
+          sim.py runs every lot in one morning. Stall ids are lot:row-NN (sage:B-04), zones are lot:row (sage:B).
+          Live cameras now re-report every stall each minute (ttl 90s), so live lots stay fresh instead of expiring to unknown.
+  → DI: read_feed works unchanged (checked). DI-2 keys stalls by the new ids and adds a lots summary per lot_id (see SK-STATUS).
+  → DK: drop the typed-in lots. Names and totals come from campus.json; keep pin positions in the page keyed by lot_id
+        (rinker, sage, libn, libs, hollis, east, west1, west2, stetson). Counts and ages will come from SK-VIEW.
+
+2026-10-12 · BD-10 started · writes SK-FEED for camera lots
+  landed: vision.py — photos + a camera file (one polygon per stall) → events in the same shape as the simulator's.
+          observed_at = when the photo was taken (from its file name), never when it was processed.
+          Pillow and NumPy are allowed in vision.py only; nothing in parkfind/ uses them, so DI and DK install nothing.
+  → DI: nothing changes for read_feed; camera events look exactly like simulator events.
+  → DK: nothing yet. One of the nine lots will become a real-photo lot once its camera file exists.

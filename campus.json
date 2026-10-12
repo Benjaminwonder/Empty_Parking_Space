@@ -1,0 +1,16 @@
+{
+  "about": "L0: the one campus layout. sim.py, last-seen, guidance and the page all read this file; nobody copies it into code. Each row is a zone; row A is nearest the lot entrance. Stall ids are lot:row-NN (sage:B-04). special_stalls list ids inside the lot (B-04). sensors name what each lot can see; demand scales how busy the lot is.",
+  "campus_id": "stetson",
+  "utc_offset": "-04:00",
+  "lots": [
+    {"lot_id": "rinker",  "name": "Rinker Field Lot",  "rows": ["A", "B", "C"],      "stalls_per_row": 8,  "special_stalls": {"ada": ["A-01"], "ev": []},                 "sensors": ["hourly"],         "demand": 0.8},
+    {"lot_id": "sage",    "name": "Sage Hall Lot",     "rows": ["A", "B", "C", "D"], "stalls_per_row": 8,  "special_stalls": {"ada": ["A-01", "A-02"], "ev": []},         "sensors": ["continuous"],     "demand": 1.3},
+    {"lot_id": "libn",    "name": "Library North",     "rows": ["A", "B"],           "stalls_per_row": 10, "special_stalls": {"ada": ["A-01"], "ev": ["A-02", "A-03"]},   "sensors": ["continuous"],     "demand": 1.2},
+    {"lot_id": "libs",    "name": "Library South",     "rows": ["A", "B"],           "stalls_per_row": 7,  "special_stalls": {"ada": ["A-01"], "ev": []},                 "sensors": ["periodic_15min"], "demand": 1.4},
+    {"lot_id": "hollis",  "name": "Hollis Center Lot", "rows": ["A", "B"],           "stalls_per_row": 8,  "special_stalls": {"ada": ["A-01"], "ev": ["A-02", "A-03"]},   "sensors": ["periodic_5min"],  "demand": 1.0},
+    {"lot_id": "east",    "name": "East Lot",          "rows": ["A", "B", "C", "D"], "stalls_per_row": 7,  "special_stalls": {"ada": ["A-01"], "ev": []},                 "sensors": ["event_only"],     "demand": 0.9},
+    {"lot_id": "west1",   "name": "West Row 1",        "rows": ["A", "B", "C"],      "stalls_per_row": 8,  "special_stalls": {"ada": ["A-01"], "ev": []},                 "sensors": ["periodic_15min"], "demand": 1.0},
+    {"lot_id": "west2",   "name": "West Row 2",        "rows": ["A", "B"],           "stalls_per_row": 11, "special_stalls": {"ada": ["A-01"], "ev": []},                 "sensors": ["hourly"],         "demand": 0.7},
+    {"lot_id": "stetson", "name": "Stetson Hall Lot",  "rows": ["A", "B"],           "stalls_per_row": 10, "special_stalls": {"ada": ["A-01"], "ev": ["A-02", "A-03"]},   "sensors": ["continuous"],     "demand": 1.1}
+  ]
+}
