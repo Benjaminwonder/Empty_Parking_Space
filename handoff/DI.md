@@ -16,3 +16,9 @@ verified: quick and slow snapshots both contain 120 stalls; rejected_lines=0; ex
 note: existing quick feed has 15s TTL claims and produces 120 unknown stalls at 08:15 local. A better quick/slow comparison needs appropriately timed sensor observations.
 → BD: status.json is available for guidance; review the quick/slow demonstration data.
 → DK: JSON status is ready; HTTP SK-VIEW integration follows in DI-4.
+
+2026-10-12 · DI-4 HTTP view implemented · exposes SK-VIEW
+landed: parkfind/server.py — GET /view returns as_of, freshness-aware status, and answer.
+verified: quick and slow feeds both return 120 stalls; CORS allows http://localhost:8085; no simulator truth is exposed.
+→ BD: answer is currently null; integrate guidance.answer() when BD-8 lands.
+→ DK: frontend can now request http://localhost:8765/view?vehicle_class=regular&driver_id=test1.
