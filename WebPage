@@ -19,11 +19,8 @@ import java.util.regex.Pattern;
 
 public class WebPage {
 
-    // port 8085: Benjamin's handoff note and CONTRACT.md say the server moved here
     static int myPort = 8085;
 
-    // one parking spot. everything in here comes from the layout file (L0),
-    // nothing is typed in by hand and nothing is random anymore
     static class Stall {
         String id;
         String zone;
@@ -43,7 +40,6 @@ public class WebPage {
         }
     }
 
-    // the whole lot: its name plus every stall in the order they're read
     static class Layout {
         String lotId;
         List<Stall> stalls = new ArrayList<>();
@@ -51,21 +47,16 @@ public class WebPage {
 
     public static void main(String[] args) throws Exception {
 
-        // read the layout file first. run this from the project root because
-        // the path is relative (the json sits next to sim.py)
         Layout layout = loadLayout("lot_commuter_north.json");
 
-        // build the html one time at startup since the layout doesn't change
         String page = buildPage(layout);
 
         HttpServer server = HttpServer.create(
                 new InetSocketAddress(myPort), 0);
 
-        // "/" is the only route, every request just gets the page back
         server.createContext("/", new MyHandler(page));
         server.start();
 
-        // quick check against BD-1: should say 120 stalls, 5 ADA, 8 EV
         long adaCount = layout.stalls.stream().filter(s -> s.ada).count();
         long evCount = layout.stalls.stream().filter(s -> s.ev).count();
 
@@ -75,8 +66,6 @@ public class WebPage {
                 + " (ADA " + adaCount + ", EV " + evCount + ")");
     }
 
-    // sends the finished page to the browser. it doesn't think about
-    // anything, it just hands over the html string
     static class MyHandler implements HttpHandler {
 
         private String page;
@@ -104,17 +93,11 @@ public class WebPage {
         }
     }
 
-    // DK-2: turn lot_commuter_north.json into stall objects.
-    // no stall id or ADA/EV spot is written in this file, it all comes from here.
-    // I'm using regex instead of a json library because we're standard
-    // library only (D1)
     static Layout loadLayout(String filename) throws IOException {
 
         String json = Files.readString(Path.of(filename));
 
         Layout layout = new Layout();
-
-        // grab the lot name (lot_id)
 
         Matcher lotMatcher = Pattern.compile(
                 "\"lot_id\"\\s*:\\s*\"([^\"]+)\"")
@@ -124,16 +107,12 @@ public class WebPage {
             layout.lotId = lotMatcher.group(1);
         }
 
-        // the ADA and EV lists from special_stalls, used later to mark stalls
         List<String> adaStalls =
                 getStringArray(json, "ada");
 
         List<String> evStalls =
                 getStringArray(json, "ev");
 
-        // matches one zone block. heads up: the keys have to be in this exact
-        // order (zone_id, fill_priority, rows, stalls_per_row) or it finds
-        // nothing, so if Benjamin changes the json order this breaks
         Pattern zonePattern = Pattern.compile(
                 "\\{\\s*" +
                 "\"zone_id\"\\s*:\\s*\"([^\"]+)\"\\s*," +
@@ -144,7 +123,6 @@ public class WebPage {
 
         Matcher zoneMatcher = zonePattern.matcher(json);
 
-        // go through each zone (near, mid, far)
         while (zoneMatcher.find()) {
 
             String zone = zoneMatcher.group(1);
@@ -152,7 +130,6 @@ public class WebPage {
             int stallsPerRow =
                     Integer.parseInt(zoneMatcher.group(4));
 
-            // pull the row names out of the rows list, like N1, N2...
             Matcher rowMatcher = Pattern.compile(
                     "\"([^\"]+)\"")
                     .matcher(rowsText);
@@ -161,8 +138,6 @@ public class WebPage {
 
                 String row = rowMatcher.group(1);
 
-                // every row has stalls_per_row stalls, so count 1 up to that.
-                // %02d makes it 01 not 1, so ids look like N1-01
                 for (int number = 1;
                      number <= stallsPerRow;
                      number++) {
@@ -172,7 +147,6 @@ public class WebPage {
                             row,
                             number);
 
-                    // a stall is ADA/EV only if the layout file lists its id
                     boolean ada =
                             adaStalls.contains(id);
 
@@ -191,8 +165,6 @@ public class WebPage {
             }
         }
 
-        // if nothing loaded the regex probably didn't match the file, so stop
-        // loudly instead of showing an empty lot (and don't make up stalls)
         if (layout.stalls.isEmpty()) {
             throw new IOException(
                     "No stalls found in " + filename
@@ -202,8 +174,6 @@ public class WebPage {
         return layout;
     }
 
-    // finds "key": [ "a", "b" ] in the json and gives back a list of the
-    // strings. returns an empty list if the key isn't there
     static List<String> getStringArray(
             String json,
             String key) {
@@ -231,19 +201,12 @@ public class WebPage {
         return values;
     }
 
-    // makes a string safe to put inside "quotes" in the json I hand to the page
     static String esc(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    // turns the layout into a small json string for the page's javascript.
-    // shape: {lot, zones:[{id, rows:[{id, stalls:[{id, n, t}]}]}]}
-    // t is Regular / ADA / EV. this is the ONLY place the page gets stalls from,
-    // so the map draws exactly what the layout file says (X5 stays dead)
     static String buildLayoutJson(Layout layout) {
 
-        // group the flat stall list into zone -> row -> stalls, keeping the
-        // same order the file had them in
         Map<String, Map<String, List<Stall>>> zones = new LinkedHashMap<>();
 
         for (Stall stall : layout.stalls) {
@@ -264,7 +227,6 @@ public class WebPage {
 
                 for (Stall stall : row.getValue()) {
 
-                    // same rule as before: EV wins if a stall is in both lists
                     String type = "Regular";
                     if (stall.ada) {
                         type = "ADA";
@@ -290,18 +252,9 @@ public class WebPage {
                 + "\"zones\":[" + String.join(",", zoneJson) + "]}";
     }
 
-    // makes the whole html page as one string.
-    // the page only draws what the layout says. it doesn't decide whether a
-    // spot is free or taken (that's DK-3 and comes from SK-VIEW), so every
-    // stall is gray / unknown for now. I did NOT copy the made up 12/20 numbers
-    // from the mockup because that would be inventing occupancy
     static String buildPage(Layout layout) {
 
-        // the page is a plain text block. I swap in the layout json
-        // with .replace() instead of .formatted() so the css / javascript
-        // can use % signs without breaking anything
-        // NOTE: don't put a backslash in the javascript, the text block eats it
-        String page = """
+        String part1 = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -311,8 +264,6 @@ public class WebPage {
 <title>ParkFind</title>
 
 <style>
-
-/* css is just looks, nothing in here decides occupancy */
 
 * {
     box-sizing: border-box;
@@ -324,8 +275,6 @@ body {
     background: #f4f5f7;
     color: #1f2933;
 }
-
-/* ---------- top bar (search + last updated) ---------- */
 
 .topbar {
     background: #ffffff;
@@ -370,7 +319,20 @@ body {
     background: #6b7280;
 }
 
-/* the filter chips */
+.dot.ok { background: #1b8a3a; }
+.dot.down { background: #d62b2b; }
+
+.spot-age {
+    color: #888;
+    margin-left: 6px;
+}
+
+.closeup-age {
+    font-size: 11px;
+    color: #666;
+    margin: -2px 0 6px;
+}
+
 .chips {
     display: flex;
     gap: 10px;
@@ -393,8 +355,6 @@ body {
     color: white;
 }
 
-/* ---------- map + side panel ---------- */
-
 .layout {
     display: flex;
     gap: 16px;
@@ -409,7 +369,7 @@ body {
     border: 1px solid #ddd;
     border-radius: 12px;
     overflow: hidden;
-    background: #d6e6cc;
+    background: #cfe3c1;
 }
 
 .map-scroll {
@@ -420,9 +380,9 @@ body {
 
 svg {
     display: block;
+    cursor: grab;
 }
 
-/* + / - / fit buttons in the corner of the map */
 .zoom {
     position: absolute;
     right: 14px;
@@ -430,6 +390,131 @@ svg {
     display: flex;
     flex-direction: column;
     gap: 6px;
+}
+
+/* the close-up inset: appears top-right once a route is picked, showing
+   a zoomed view of the stall and the route so you don't have to scroll
+   the whole map over to the lot to see it */
+.closeup {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 260px;
+    background: #ffffff;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+    padding: 8px;
+    display: none;
+}
+
+.closeup.show {
+    display: block;
+}
+
+.closeup-title {
+    font-size: 12px;
+    font-weight: bold;
+    color: #1f2933;
+    margin-bottom: 6px;
+}
+
+.closeup svg {
+    width: 100%;
+    height: 170px;
+    border-radius: 8px;
+    background: #cfe3c1;
+    cursor: default;
+}
+
+/* the building key, stacked under the close-up inset on the right */
+.bkey {
+    position: absolute;
+    top: 232px;
+    right: 14px;
+    width: 260px;
+    max-height: calc(100% - 250px);
+    background: #ffffff;
+    border: 1px solid #ddd;
+    border-radius: 12px;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+    padding: 10px 8px 8px 10px;
+    display: flex;
+    flex-direction: column;
+}
+
+.bkey-title {
+    font-size: 12px;
+    font-weight: bold;
+    color: #1f2933;
+    margin-bottom: 2px;
+}
+
+.bkey-sub {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 6px;
+}
+
+.bkey-list {
+    overflow-y: auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2px 6px;
+    padding-right: 4px;
+}
+
+.key-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    padding: 3px 4px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.key-row:hover {
+    background: #f1f3f4;
+}
+
+.key-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+}
+
+/* the lot pavement drawn right on the main map (DK note: this is the part
+   that used to say "the lots are NOT drawn on the campus map" - now they are) */
+.lot-shape {
+    cursor: pointer;
+}
+
+.lot-shape .lot-pave {
+    fill: #8d9299;
+    stroke: #6b7280;
+    stroke-width: 2;
+}
+
+.lot-shape:hover .lot-pave {
+    stroke: #1a73e8;
+    stroke-width: 3;
+}
+
+.lot-pin-body {
+    stroke: #ffffff;
+    stroke-width: 2.5;
+    fill: #14532d;
+}
+
+.lot-pin-label {
+    font-size: 13px;
+    font-weight: bold;
+    fill: #ffffff;
+    text-anchor: middle;
+    pointer-events: none;
 }
 
 .zbtn {
@@ -506,6 +591,7 @@ ol.steps li {
 
 .btn {
     margin-top: 14px;
+    margin-right: 8px;
     padding: 9px 14px;
     border: 1px solid #ccc;
     border-radius: 8px;
@@ -530,26 +616,28 @@ ol.steps li {
     outline: 1px solid #9ca3af;
 }
 
-/* ---------- things inside the svg map ---------- */
-
-/* every stall starts as gray "unknown". DK-3 will swap in free / taken
-   classes from SK-VIEW later. unknown must never turn green */
 .stall-rect {
     fill: #cfd2d6;
     stroke: #ffffff;
-    stroke-width: 1.5;
+    stroke-width: 2;
 }
 
 .stall.type-ada .stall-rect {
-    fill: #c9d8f5;
     stroke: #2563eb;
-    stroke-width: 2;
+    stroke-width: 3;
 }
 
 .stall.type-ev .stall-rect {
-    fill: #e1d3f5;
     stroke: #7c3aed;
-    stroke-width: 2;
+    stroke-width: 3;
+}
+
+.stall.s-free .stall-rect {
+    fill: #8fd19e;
+}
+
+.stall.s-taken .stall-rect {
+    fill: #ef9a9a;
 }
 
 .stall {
@@ -563,7 +651,7 @@ ol.steps li {
 
 .stall.selected .stall-rect {
     stroke: #1a73e8;
-    stroke-width: 4;
+    stroke-width: 5;
 }
 
 .stall.dim {
@@ -571,38 +659,124 @@ ol.steps li {
 }
 
 .stall-num {
-    font-size: 9px;
+    font-size: 12px;
     fill: #374151;
     text-anchor: middle;
     pointer-events: none;
 }
 
 .stall-icon {
-    font-size: 12px;
+    font-size: 16px;
     text-anchor: middle;
     pointer-events: none;
 }
 
-.pill-text {
-    font-size: 13px;
+.pill-name {
+    font-size: 11px;
+    font-weight: bold;
+    fill: #6b7280;
+    letter-spacing: 1px;
+}
+
+.pill-count {
+    font-size: 21px;
     font-weight: bold;
     fill: #374151;
 }
 
-.label {
-    font-size: 13px;
-    fill: #5f554a;
-    font-weight: bold;
-    text-anchor: middle;
-}
-
 .road-label {
-    font-size: 12px;
-    fill: #6b7280;
+    font-size: 15px;
+    fill: #f3f4f6;
     letter-spacing: 3px;
+    text-anchor: middle;
+    pointer-events: none;
 }
 
-/* the moving dashes on top of the blue route line */
+.building {
+    cursor: pointer;
+}
+
+.building .b-wall {
+    fill: #ddd2c2;
+    stroke: #a99a86;
+    stroke-width: 1.5;
+}
+
+.building:hover .b-wall {
+    fill: #f0e7da;
+    stroke: #1a73e8;
+    stroke-width: 3;
+}
+
+.building.selected .b-wall {
+    stroke: #1a73e8;
+    stroke-width: 5;
+}
+
+.pin {
+    cursor: pointer;
+}
+
+.pin-body {
+    stroke: #ffffff;
+    stroke-width: 2.5;
+}
+
+.pin-num {
+    font-size: 16px;
+    font-weight: bold;
+    fill: #ffffff;
+    text-anchor: middle;
+    pointer-events: none;
+}
+
+.pin:hover .pin-body {
+    stroke: #fde68a;
+}
+
+.pin.selected .pin-body {
+    stroke: #1a73e8;
+    stroke-width: 4;
+}
+
+.hidden {
+    display: none;
+}
+
+.reveal {
+    animation: pop 0.35s ease;
+    transform-box: fill-box;
+    transform-origin: center;
+}
+
+@keyframes pop {
+    from { opacity: 0; transform: scale(0.9); }
+    to { opacity: 1; transform: scale(1); }
+}
+
+.map-legend {
+    position: absolute;
+    left: 14px;
+    bottom: 14px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 18px;
+    background: #ffffff;
+    border-radius: 24px;
+    font-size: 13px;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.25);
+}
+
+.map-legend span.k {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    margin-right: 6px;
+    vertical-align: -1px;
+}
+
 .route-flow {
     stroke-dasharray: 2 14;
     animation: flow 1s linear infinite;
@@ -617,6 +791,259 @@ ol.steps li {
     .side { width: 100%; }
 }
 
+.win-back {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 20;
+    background: rgba(15, 23, 42, 0.38);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+}
+
+.win-back.hidden {
+    display: none;
+}
+
+.win {
+    width: min(940px, 100%);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    animation: pop 0.25s ease;
+}
+
+.win-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px 10px 18px;
+    border-bottom: 1px solid #e5e7eb;
+}
+
+.win-title {
+    font-size: 19px;
+    font-weight: bold;
+}
+
+.win-sub {
+    font-size: 13px;
+    color: #666;
+    margin-top: 3px;
+}
+
+.win-x {
+    border: none;
+    background: #f1f3f4;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    font-size: 20px;
+    cursor: pointer;
+}
+
+.win-body {
+    display: flex;
+    gap: 14px;
+    padding: 14px 18px;
+    overflow: auto;
+    flex: 1;
+}
+
+.lot-card {
+    flex: 1 1 380px;
+    min-width: 0;
+    border: 1px solid #e0e3e5;
+    border-radius: 12px;
+    padding: 12px;
+    background: #fafafa;
+}
+
+.lot-card.best {
+    border-color: #1a73e8;
+    box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.18);
+}
+
+.lot-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.lot-name {
+    font-size: 17px;
+    font-weight: bold;
+}
+
+.rank {
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    padding: 3px 8px;
+    border-radius: 10px;
+}
+
+.rank.r0 { background: #1a73e8; color: #ffffff; }
+.rank.r1 { background: #e5e7eb; color: #374151; }
+.rank.rfull { background: #d62b2b; color: #ffffff; }
+
+.lot-sub {
+    font-size: 12px;
+    color: #666;
+    margin-top: 3px;
+}
+
+.stat-line {
+    display: flex;
+    gap: 14px;
+    margin: 8px 0;
+    font-size: 13px;
+}
+
+.stat .k, .spot .k {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+}
+
+.lot-svg {
+    width: 100%;
+    height: auto;
+    max-height: 280px;
+    border-radius: 8px;
+}
+
+.list-title {
+    font-size: 13px;
+    font-weight: bold;
+    margin: 10px 0 4px 0;
+}
+
+.list-note {
+    font-size: 12px;
+    color: #666;
+    margin-bottom: 6px;
+}
+
+.spot-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    max-height: 104px;
+    overflow: auto;
+}
+
+.spot {
+    display: flex;
+    align-items: center;
+    padding: 5px 9px;
+    font-size: 12px;
+    border: 1px solid #d0d4d8;
+    border-radius: 14px;
+    background: #ffffff;
+    cursor: pointer;
+}
+
+.spot.selected {
+    border-color: #1a73e8;
+    background: #e8f0fe;
+    font-weight: bold;
+}
+
+.spot .dist {
+    color: #888;
+    margin-left: 6px;
+    font-weight: normal;
+}
+
+.tag {
+    font-size: 10px;
+    font-weight: bold;
+    margin-left: 5px;
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+
+.tag.ada { background: #cfe0fb; color: #1e3a8a; }
+.tag.ev { background: #e5d8f7; color: #5b21b6; }
+
+.win-foot {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 18px;
+    border-top: 1px solid #e5e7eb;
+    background: #ffffff;
+    flex-wrap: wrap;
+}
+
+.foot-info {
+    flex: 1;
+    min-width: 200px;
+}
+
+.foot-main {
+    font-size: 15px;
+    font-weight: bold;
+}
+
+.foot-sub {
+    font-size: 12px;
+    color: #666;
+}
+
+.win-legend {
+    display: flex;
+    gap: 12px;
+    font-size: 12px;
+}
+
+.win-legend .k {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    margin-right: 5px;
+}
+
+.win-foot .btn {
+    margin: 0;
+}
+
+.btn.primary {
+    background: #1a73e8;
+    border-color: #1a73e8;
+    color: #ffffff;
+    font-weight: bold;
+    padding: 10px 20px;
+}
+
+.btn.primary:disabled {
+    background: #a9c4ee;
+    border-color: #a9c4ee;
+    cursor: default;
+}
+
+.route-g.preview {
+    animation: blink 0.9s ease-in-out infinite;
+}
+
+@keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.2; }
+}
+
 </style>
 </head>
 
@@ -628,15 +1055,12 @@ ol.steps li {
 
         <div class="logo">ParkFind</div>
 
-        <!-- search by stall id, like N1-06. Enter shows the route -->
         <input id="search" class="search"
                placeholder="Search a stall (e.g. N1-06)">
 
-        <!-- X4: this used to be the server start time. no live data is
-             hooked up yet so I'm not showing a fake time. DK-3 puts as_of here -->
         <div class="updated">
-            <span class="dot"></span>
-            <span>Layout only &middot; live data not connected</span>
+            <span class="dot" id="updatedDot"></span>
+            <span id="updatedText">Connecting to live data&hellip;</span>
         </div>
 
     </div>
@@ -652,10 +1076,38 @@ ol.steps li {
             <svg id="map"></svg>
         </div>
 
+        <div class="win-back hidden" id="winBack">
+            <div class="win">
+                <div class="win-head">
+                    <div>
+                        <div class="win-title" id="winTitle"></div>
+                        <div class="win-sub" id="winSub"></div>
+                    </div>
+                    <button class="win-x" id="winX">&times;</button>
+                </div>
+                <div class="win-body" id="winBody"></div>
+                <div class="win-foot" id="winFoot"></div>
+            </div>
+        </div>
+
         <div class="zoom">
             <button class="zbtn" id="zin">+</button>
             <button class="zbtn" id="zout">&minus;</button>
             <button class="zbtn small" id="zfit">Fit</button>
+        </div>
+
+        <!-- the close-up inset. hidden until a spot is picked -->
+        <div class="closeup" id="closeup">
+            <div class="closeup-title" id="closeupTitle"></div>
+            <div class="closeup-age" id="closeupAge"></div>
+            <svg id="closeupSvg"></svg>
+        </div>
+
+        <!-- the building key, always visible under the close-up -->
+        <div class="bkey">
+            <div class="bkey-title">Buildings</div>
+            <div class="bkey-sub">Numbers match the campus map. Click one to see nearby parking.</div>
+            <div class="bkey-list" id="buildingKeyList"></div>
         </div>
     </div>
 
@@ -665,25 +1117,53 @@ ol.steps li {
 
 <script>
 
-// the layout from lot_commuter_north.json, put here by the java code
 const LAYOUT = __LAYOUT_JSON__;
 
 const SVGNS = "http://www.w3.org/2000/svg";
 
-// ---------- sizes. all numbers are map units, 10 units = 1 meter ----------
-const PX_PER_M = 10;
-const STALL_W = 24;      // stall width
-const STALL_STEP = 26;   // stall width + a small gap
-const STALL_H = 32;      // stall depth
-const AISLE_H = 30;      // the lane between two rows
-const PAIR_GAP = 10;     // little gap between one pair of rows and the next
-const PAIR_H = STALL_H + AISLE_H + STALL_H;
-const GATE_X = 85;       // the main drive runs down from the gate at x = 85
-const GATE_Y = 40;
-const BLOCK_X = 140;     // where every lot starts from the left
-const ZONE_GAP = 78;     // space between lots (has to fit the P pill)
+// ---------- sizes ----------
+// DK note: these numbers now come from measuring the real Stetson campus
+// map image pixel-by-pixel (690 x 736), not a guessed 1024x787 layout.
+// The commuter lot is anchored near the O-series commuter lots by Rinker
+// Intramural Field, between East Oakdale Ave and East Pennsylvania Ave.
+const S = 2;
+// let, not const: the lot can need more room than the real photo is wide
+// (see the note by BAND_LEFT below), so this grows after the lot is sized
+let MAP_W = 690 * S;
+let MAP_H = 736 * S;
 
-// small helper: make an svg element, set its attributes, add it to a parent
+const PX_PER_M = 4;
+const STALL_W = 29;
+const STALL_STEP = 31.5;
+const STALL_H = 35;
+const AISLE_H = 30;
+const PAIR_GAP = 8;
+const PAIR_H = STALL_H + AISLE_H + STALL_H;
+const LANE_W = 38;
+const LANE_PAD = 6;
+const LOT_PAD = 10;
+const ZONE_GAP = 10;
+const LOT_HEAD = 28;
+
+// the Main Gate is where N Woodland Blvd crosses E Michigan Ave (measured:
+// Woodland Blvd x=168, Michigan Ave y=547, in picture units)
+const GATE_X = 168 * S;
+const GATE_Y = 547 * S;
+
+// the lot's own road is East Oakdale Ave (measured y=98), the road the
+// O-series commuter lots open onto, north of the Rinker Intramural block
+const LOT_ROAD_Y = 98 * S;
+const ROAD_HALF = 5 * S;
+const LOT_TOP = LOT_ROAD_Y + ROAD_HALF + 40;
+// DK note: the real block by Oakdale Ave is only ~250 map units wide, but a
+// 120-stall lot drawn at a readable size needs much more room than that (the
+// stall sizes above are tuned for clickability, not to the real block's
+// footprint). The lot itself is never drawn on the main map - only its gate
+// marker and entrance point are - so the lot starts just past the gate's
+// road and the canvas grows to fit it (see "MAP_W = Math.max(...)" below),
+// instead of trying to squeeze it into the real block's actual width.
+const BAND_LEFT = GATE_X + 20;
+
 function el(tag, attrs, parent, text) {
     const e = document.createElementNS(SVGNS, tag);
     for (const k in attrs) {
@@ -706,14 +1186,31 @@ function dist(a, b) {
     return Math.hypot(b[0] - a[0], b[1] - a[1]);
 }
 
-// ---------- 1. work out where everything goes (from the layout only) ----------
-
-// stalls by id so clicking / searching can find them fast
 const stalls = {};
 const zones = [];
 
-let cursorY = 110;       // where the next lot starts (top has the road + pill)
-let widest = 0;
+function lotWidth(zone) {
+    let perRow = 0;
+    zone.rows.forEach(function (r) {
+        perRow = Math.max(perRow, r.stalls.length);
+    });
+    return LANE_W + LANE_PAD + perRow * STALL_STEP - (STALL_STEP - STALL_W);
+}
+
+let rowWidth = 0;
+let lotCount = 0;
+LAYOUT.zones.forEach(function (zone) {
+    if (zone.rows.length > 0) {
+        rowWidth += lotWidth(zone) + 2 * LOT_PAD + (lotCount > 0 ? ZONE_GAP : 0);
+        lotCount++;
+    }
+});
+
+// grow the canvas to fit the lot if it needs more room than the real photo
+// is wide, instead of risking the entrance marker landing off the edge
+MAP_W = Math.max(MAP_W, Math.ceil(BAND_LEFT + rowWidth + 60));
+
+let cursorX = BAND_LEFT + LOT_PAD;
 
 LAYOUT.zones.forEach(function (zone) {
 
@@ -726,24 +1223,24 @@ LAYOUT.zones.forEach(function (zone) {
         perRow = Math.max(perRow, r.stalls.length);
     });
 
-    // rows go in pairs with an aisle between them (row 1 + row 2, row 3 + row 4)
     const pairs = Math.ceil(zone.rows.length / 2);
     const height = pairs * PAIR_H + (pairs - 1) * PAIR_GAP;
-    const width = perRow * STALL_STEP - (STALL_STEP - STALL_W);
+    const width = LANE_W + LANE_PAD + perRow * STALL_STEP - (STALL_STEP - STALL_W);
 
     const z = {
         id: zone.id,
         rows: zone.rows,
-        x: BLOCK_X,
-        y: cursorY,
+        x: cursorX,
+        y: LOT_TOP + LOT_PAD + LOT_HEAD,
         w: width,
         h: height,
+        laneX: cursorX + LANE_W / 2,
         pairs: pairs,
         aisles: []
     };
 
     for (let p = 0; p < pairs; p++) {
-        const pairTop = cursorY + p * (PAIR_H + PAIR_GAP);
+        const pairTop = z.y + p * (PAIR_H + PAIR_GAP);
         z.aisles.push({
             y: pairTop + STALL_H + AISLE_H / 2,
             rowA: zone.rows[2 * p].id,
@@ -754,7 +1251,7 @@ LAYOUT.zones.forEach(function (zone) {
     zone.rows.forEach(function (row, ri) {
         const pair = Math.floor(ri / 2);
         const second = (ri % 2 === 1);
-        const pairTop = cursorY + pair * (PAIR_H + PAIR_GAP);
+        const pairTop = z.y + pair * (PAIR_H + PAIR_GAP);
 
         row.stalls.forEach(function (s, si) {
             stalls[s.id] = {
@@ -764,147 +1261,313 @@ LAYOUT.zones.forEach(function (zone) {
                 zone: z,
                 row: row.id,
                 pair: pair,
-                x: BLOCK_X + si * STALL_STEP,
+                x: cursorX + LANE_W + LANE_PAD + si * STALL_STEP,
                 y: pairTop + (second ? STALL_H + AISLE_H : 0),
-                aisleY: z.aisles[pair].y,
-                belowAisle: second      // second row of a pair sits under the aisle
+                aisleY: z.aisles[pair].y
             };
         });
     });
 
     zones.push(z);
-    widest = Math.max(widest, width);
-    cursorY += height + ZONE_GAP;
+    cursorX += width + 2 * LOT_PAD + ZONE_GAP;
 });
-
-const MAP_W = Math.max(1200, BLOCK_X + widest + 640);
-const MAP_H = cursorY - ZONE_GAP + 70;
-
-// ---------- 2. draw the map background (just scenery) ----------
 
 const svg = document.getElementById("map");
 svg.setAttribute("viewBox", "0 0 " + MAP_W + " " + MAP_H);
+svg.setAttribute("width", MAP_W);
+svg.setAttribute("height", MAP_H);
 
-// places where trees must not go (roads, lots, buildings...)
 const solid = [];
 
-function keepClear(x, y, w, h) {
-    solid.push([x - 8, y - 8, w + 16, h + 16]);
+function keepClear(x, y, w, h, pad) {
+    const p = (pad === undefined) ? 6 : pad;
+    solid.push([x - p, y - p, w + 2 * p, h + 2 * p]);
 }
 
-// grass
-el("rect", { x: 0, y: 0, width: MAP_W, height: MAP_H, fill: "#d4e5c9" }, svg);
+el("rect", { x: 0, y: 0, width: MAP_W, height: MAP_H, fill: "#cfe3c1" }, svg);
 
-// slightly lighter lawn patches so it isn't one flat green
-const lawns = el("g", {}, svg);
-el("ellipse", { cx: MAP_W - 380, cy: 260, rx: 190, ry: 120, fill: "#dcebd2" }, lawns);
-el("ellipse", { cx: MAP_W - 500, cy: MAP_H - 200, rx: 220, ry: 110, fill: "#dcebd2" }, lawns);
-
-const treeLayer = el("g", {}, svg);   // filled in after we know what to avoid
+const lawnLayer = el("g", {}, svg);
+const treeLayer = el("g", {}, svg);
 const roadLayer = el("g", {}, svg);
-const lotLayer = el("g", {}, svg);
+const lotShapeLayer = el("g", {}, svg);  // the lot pavement, drawn right on the map now
 const bldgLayer = el("g", {}, svg);
-const stallLayer = el("g", {}, svg);
+const pinLayer = el("g", {}, svg);
 const routeLayer = el("g", { "pointer-events": "none" }, svg);
 
-// the road across the top and the main drive down the left side
-el("rect", { x: 0, y: 0, width: MAP_W, height: 38, fill: "#9aa0a6" }, roadLayer);
-el("rect", { x: 0, y: 36, width: MAP_W, height: 3, fill: "#ffffff", opacity: 0.8 }, roadLayer);
-el("text", { x: MAP_W / 2, y: 24, class: "road-label", "text-anchor": "middle" },
-   roadLayer, "MAIN ROAD");
-keepClear(0, 0, MAP_W, 40);
+function lawn(x, y, w, h) {
+    el("rect", { x: x * S, y: y * S, width: w * S, height: h * S, rx: 24,
+                 fill: "#dcebd2" }, lawnLayer);
+}
+// open fields, measured from the real map: Rinker Intramural Field (between
+// Oakdale/Pennsylvania and Woodland/Bertha Fish), and Stetson Green (the quad)
+lawn(185, 100, 130, 108);     // Rinker Intramural Field
+lawn(440, 262, 152, 142);     // Stetson Green (the quad)
 
-el("rect", { x: GATE_X - 15, y: 38, width: 30, height: MAP_H - 38, fill: "#9aa0a6" }, roadLayer);
-el("line", { x1: GATE_X, y1: 40, x2: GATE_X, y2: MAP_H, stroke: "#ffffff",
-             "stroke-width": 2, "stroke-dasharray": "10 10", opacity: 0.8 }, roadLayer);
-keepClear(GATE_X - 15, 38, 30, MAP_H);
+const quad = el("g", {}, lawnLayer);
+[[447, 270, 585, 398], [585, 270, 447, 398], [516, 266, 516, 402], [444, 334, 588, 334]]
+    .forEach(function (l) {
+        el("line", { x1: l[0] * S, y1: l[1] * S, x2: l[2] * S, y2: l[3] * S,
+                     stroke: "#efe9dd", "stroke-width": 7, "stroke-linecap": "round" }, quad);
+    });
+el("circle", { cx: 510 * S, cy: 331 * S, r: 11 * S, fill: "#efe9dd" }, quad);
+el("circle", { cx: 510 * S, cy: 331 * S, r: 7 * S, fill: "#9fc5d9" }, quad);
+keepClear(446 * S, 268 * S, 140 * S, 130 * S, 0);
 
-// the right side: some buildings and walkways (decoration, not from the layout)
-const bx = BLOCK_X + widest + 100;
+function road(x, y, w, h, label, vertical) {
+    el("rect", { x: x * S, y: y * S, width: w * S, height: h * S, fill: "#9aa0a6" }, roadLayer);
+    keepClear(x * S, y * S, w * S, h * S, 4);
 
-const buildings = [
-    { x: bx,       y: 100, w: 230, h: 150, label: "Campus Core" },
-    { x: bx + 270, y: 100, w: 170, h: 110, label: "" },
-    { x: bx,       y: 320, w: 150, h: 110, label: "" },
-    { x: bx + 200, y: 300, w: 220, h: 140, label: "" },
-    { x: bx + 40,  y: 530, w: 190, h: 110, label: "" },
-    { x: bx + 300, y: 520, w: 150, h: 120, label: "" }
-];
+    if (label) {
+        const cx = (x + w / 2) * S;
+        const cy = (y + h / 2) * S;
+        if (vertical) {
+            el("text", { x: cx, y: cy + 5, "class": "road-label",
+                         transform: "rotate(-90 " + cx + " " + cy + ")" }, roadLayer, label);
+        } else {
+            el("text", { x: cx, y: cy + 5, "class": "road-label" }, roadLayer, label);
+        }
+    }
+}
 
-// walkways from each lot over to the buildings
-const walks = el("g", {}, roadLayer);
-el("rect", { x: bx - 40, y: 90, width: 9, height: MAP_H - 150, fill: "#efe9dd" }, walks);
-keepClear(bx - 40, 90, 9, MAP_H - 150);
+// DK note: every road below is measured off the real campus map image
+// (gray-pixel band detection), not guessed. x/y are picture units (690x736).
+// vertical roads, left to right
+road(52, 0, 6, 736, "", true);                             // west edge alley
+road(165, 0, 8, 736, "N WOODLAND BLVD", true);              // US 17/92, the campus spine
+road(312, 0, 6, 390, "", true);                             // short connector by Rinker/Stetson Green
+road(388, 0, 6, 736, "N AMELIA AVE", true);
+road(612, 0, 6, 736, "N GARFIELD AVE", true);
+
+// horizontal roads, top to bottom
+road(0, 71, 690, 6, "EAST STETSON ST", false);
+road(0, 95, 690, 6, "EAST OAKDALE AVE", false);
+road(0, 207, 690, 6, "EAST PENNSYLVANIA AVE", false);
+road(0, 315, 690, 6, "EAST UNIVERSITY AVE", false);
+road(0, 425, 690, 6, "EAST MINNESOTA AVE", false);
+road(390, 476, 230, 6, "EAST ARIZONA AVE", false);
+road(0, 544, 690, 6, "EAST MICHIGAN AVE", false);
+road(0, 598, 690, 6, "EAST OHIO AVE", false);
+road(0, 644, 690, 6, "WISCONSIN AVE", false);
+
+// white center dashes on the two roads the route uses
+el("line", { x1: 0, y1: GATE_Y, x2: MAP_W, y2: GATE_Y, stroke: "#ffffff",
+             "stroke-width": 2, "stroke-dasharray": "14 12", opacity: 0.7 }, roadLayer);
+el("line", { x1: GATE_X, y1: 0, x2: GATE_X, y2: MAP_H, stroke: "#ffffff",
+             "stroke-width": 2, "stroke-dasharray": "14 12", opacity: 0.7 }, roadLayer);
+
+// ---------- the lots, drawn right on the map ----------
+// DK note: these are small, true-to-the-photo markers - picture-unit
+// rectangles read off the real map, checked by code against every building
+// and road so none of them overlap. They are NOT the full stall grid (120
+// stalls at a clickable size can't fit in this real, tiny block without
+// overlapping buildings 67/73/etc - the math just doesn't allow it). The
+// full detailed grid still exists, it just lives in its own working space
+// (see z.x/z.y below) used only by the pop-up window and the close-up,
+// never drawn directly on the campus picture. Clicking a marker opens that
+// same detailed grid in the pop-up, same as before.
+const LOT_MARKERS = {
+    near: { x: 178, y: 108, w: 60, h: 50 },
+    mid:  { x: 322, y: 175, w: 55, h: 23 },
+    far:  { x: 320, y: 250, w: 50, h: 30 }
+};
+
+function markerFor(z) {
+    return LOT_MARKERS[z.id] || null;
+}
 
 zones.forEach(function (z) {
-    const wy = z.y + z.h / 2 - 4;
-    el("rect", { x: z.x + z.w + 10, y: wy, width: bx - (z.x + z.w + 10) - 31,
-                 height: 9, fill: "#efe9dd" }, walks);
-    keepClear(z.x + z.w + 10, wy, bx - (z.x + z.w + 10), 9);
-});
-
-buildings.forEach(function (b) {
-    if (b.y + b.h > MAP_H - 20) {
-        return;
+    const m = markerFor(z);
+    if (!m) {
+        return;  // no real-photo spot known for this zone id - it still works from the pop-up, just isn't pinned on the map
     }
-    el("rect", { x: b.x + 4, y: b.y + 5, width: b.w, height: b.h, rx: 6,
-                 fill: "#000000", opacity: 0.12 }, bldgLayer);
-    el("rect", { x: b.x, y: b.y, width: b.w, height: b.h, rx: 6,
-                 fill: "#e3d9cc", stroke: "#b9ac9a", "stroke-width": 2 }, bldgLayer);
-    el("rect", { x: b.x + 14, y: b.y + 14, width: b.w - 28, height: b.h - 28, rx: 4,
-                 fill: "#cfc3b2" }, bldgLayer);
-    if (b.label !== "") {
-        el("text", { x: b.x + b.w / 2, y: b.y + b.h / 2 + 5, class: "label" },
-           bldgLayer, b.label);
-    }
-    keepClear(b.x, b.y, b.w, b.h);
-});
+    const mx = m.x * S, my = m.y * S, mw = m.w * S, mh = m.h * S;
 
-// the lots themselves: pavement, lanes, and the "P" marker pill above each one
-zones.forEach(function (z) {
+    const g = el("g", { "class": "lot-shape" }, lotShapeLayer);
+    el("title", {}, g, cap(z.id) + " lot · click to see its spots");
+    el("rect", { x: mx, y: my, width: mw, height: mh, rx: 8, "class": "lot-pave" }, g);
 
-    // pavement under the whole lot
-    el("rect", { x: z.x - 12, y: z.y - 10, width: z.w + 24, height: z.h + 20, rx: 10,
-                 fill: "#8d9299", stroke: "#ffffff", "stroke-width": 2 }, lotLayer);
-    keepClear(z.x - 12, z.y - 10, z.w + 24, z.h + 20);
+    keepClear(mx, my, mw, mh, 6);
 
-    z.aisles.forEach(function (a) {
-        // lane from the main drive into the lot
-        el("rect", { x: GATE_X + 15, y: a.y - AISLE_H / 2, width: z.x - (GATE_X + 15) + 6,
-                     height: AISLE_H, fill: "#8d9299" }, lotLayer);
-        // darker aisle with a dashed center line
-        el("rect", { x: z.x - 6, y: a.y - AISLE_H / 2, width: z.w + 12, height: AISLE_H,
-                     fill: "#868b92" }, lotLayer);
-        el("line", { x1: z.x, y1: a.y, x2: z.x + z.w, y2: a.y, stroke: "#ffffff",
-                     "stroke-width": 1.5, "stroke-dasharray": "8 8", opacity: 0.6 }, lotLayer);
-        keepClear(GATE_X + 15, a.y - AISLE_H / 2, z.x - GATE_X, AISLE_H);
+    g.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        openForLot(z);
     });
 
-    // marker pill like the mockup: green-ish P circle + name. it's gray because
-    // we don't know the counts yet (no fake 12/20 numbers)
-    const count = z.rows.reduce(function (sum, r) { return sum + r.stalls.length; }, 0);
-    const label = cap(z.id) + " lot · " + count + " stalls";
-    const pw = 40 + label.length * 7;
-    const pg = el("g", {}, lotLayer);
-    el("rect", { x: z.x - 12, y: z.y - 44, width: pw, height: 28, rx: 14,
-                 fill: "#ffffff", stroke: "#9ca3af", "stroke-width": 1.5 }, pg);
-    el("circle", { cx: z.x + 4, cy: z.y - 30, r: 11, fill: "#6b7280" }, pg);
-    el("text", { x: z.x + 4, y: z.y - 25, "text-anchor": "middle", fill: "#ffffff",
-                 "font-size": 14, "font-weight": "bold" }, pg, "P");
-    el("text", { x: z.x + 22, y: z.y - 25, class: "pill-text" }, pg, label);
-    keepClear(z.x - 12, z.y - 44, pw, 28);
+    // the pin: same look as a building pin, but green and labeled "P"
+    const px = mx + mw / 2;
+    const py = my - 6;
+    const pin = el("g", { "class": "pin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
+    el("title", {}, pin, cap(z.id) + " lot · click to see its spots");
+    el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
+                 "class": "lot-pin-body" }, pin);
+    el("text", { x: 0, y: -27, "class": "lot-pin-label" }, pin, "P");
+    el("text", { x: 0, y: -12, "class": "lot-pin-label", "font-size": 9 }, pin, cap(z.id));
+    pin.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        openForLot(z);
+    });
 });
 
-// the gate marker at the top of the main drive
-const gate = el("g", {}, lotLayer);
-el("circle", { cx: GATE_X, cy: GATE_Y, r: 12, fill: "#ffffff", stroke: "#14532d",
-               "stroke-width": 3 }, gate);
-el("text", { x: GATE_X + 20, y: GATE_Y + 5, "font-size": 13, "font-weight": "bold",
+// ---------- the buildings ----------
+// DK note: positions below are read off the real map (grid-by-grid), not
+// invented. Pin numbers match the real numbered pins so they're easy to
+// check against the map image. Most are drawn as a single small square,
+// since the real map doesn't show exact wall footprints for every building -
+// only the handful of large, clearly-outlined buildings get bigger rectangles.
+// If a specific number still looks off, it just needs nudging - tell DK which one.
+const BUILDINGS = [
+    { n: 1,  c: "navy",  parts: [[142, 405, 18, 14]] },
+    { n: 2,  c: "navy",  parts: [[298, 445, 14, 14]] },
+    { n: 3,  c: "navy",  parts: [[160, 330, 16, 14]] },
+    { n: 4,  c: "navy",  parts: [[85, 445, 60, 20]] },
+    { n: 5,  c: "navy",  parts: [[255, 445, 50, 24]] },
+    { n: 6,  c: "navy",  parts: [[185, 448, 36, 30]] },
+    { n: 7,  c: "navy",  parts: [[285, 480, 14, 14]] },
+    { n: 8,  c: "navy",  parts: [[135, 450, 32, 22]] },
+    { n: 9,  c: "navy",  parts: [[360, 558, 16, 14]] },
+    { n: 10, c: "navy",  parts: [[240, 470, 28, 20]] },
+    { n: 11, c: "navy",  parts: [[365, 585, 14, 14]] },
+    { n: 12, c: "navy",  parts: [[190, 562, 30, 22]] },
+    { n: 13, c: "navy",  parts: [[187, 505, 26, 24]] },
+    { n: 14, c: "navy",  parts: [[140, 298, 30, 20]] },
+    { n: 15, c: "navy",  parts: [[322, 615, 14, 14]] },
+    { n: 16, c: "navy",  parts: [[193, 512, 24, 22]] },
+    { n: 17, c: "navy",  parts: [[340, 558, 14, 14]] },
+    { n: 19, c: "navy",  parts: [[320, 435, 22, 26]] },
+    { n: 20, c: "navy",  parts: [[203, 470, 20, 18]] },
+    { n: 21, c: "navy",  parts: [[355, 448, 14, 14]] },
+    { n: 22, c: "green", parts: [[322, 310, 14, 14]] },
+    { n: 23, c: "navy",  parts: [[185, 350, 14, 14]] },
+    { n: 24, c: "green", parts: [[295, 390, 14, 14]] },
+    { n: 25, c: "navy",  parts: [[185, 255, 14, 14]] },
+    { n: 26, c: "green", parts: [[420, 448, 14, 14]] },
+    { n: 27, c: "green", parts: [[450, 510, 20, 20]] },
+    { n: 28, c: "green", parts: [[348, 466, 14, 14]] },
+    { n: 29, c: "navy",  parts: [[287, 115, 14, 14]] },
+    { n: 30, c: "navy",  parts: [[382, 100, 14, 14]] },
+    { n: 31, c: "navy",  parts: [[357, 132, 14, 14]] },
+    { n: 32, c: "navy",  parts: [[385, 162, 14, 14]] },
+    { n: 33, c: "navy",  parts: [[345, 200, 14, 14]] },
+    { n: 34, c: "navy",  parts: [[347, 225, 14, 14]] },
+    { n: 35, c: "green", parts: [[350, 348, 14, 14]] },
+    { n: 36, c: "navy",  parts: [[322, 401, 14, 14]] },
+    { n: 37, c: "navy",  parts: [[347, 383, 14, 14]] },
+    { n: 38, c: "navy",  parts: [[345, 413, 14, 14]] },
+    { n: 39, c: "navy",  parts: [[377, 388, 14, 14]] },
+    { n: 40, c: "green", parts: [[372, 408, 14, 14]] },
+    { n: 41, c: "green", parts: [[382, 227, 14, 14]] },
+    { n: 42, c: "maroon",parts: [[380, 530, 18, 16]] },
+    { n: 44, c: "navy",  parts: [[352, 48, 20, 18]] },
+    { n: 45, c: "green", parts: [[252, 45, 36, 20]] },
+    { n: 46, c: "green", parts: [[147, 237, 18, 16]] },
+    { n: 47, c: "green", parts: [[517, 563, 16, 16]] },
+    { n: 48, c: "navy",  parts: [[612, 565, 14, 14]] },
+    { n: 49, c: "navy",  parts: [[635, 548, 14, 14]] },
+    { n: 50, c: "navy",  parts: [[618, 528, 14, 14]] },
+    { n: 51, c: "maroon",parts: [[595, 528, 14, 14]] },
+    { n: 52, c: "navy",  parts: [[600, 548, 14, 14]] },
+    { n: 53, c: "navy",  parts: [[150, 378, 14, 14]] },
+    { n: 54, c: "lblue", parts: [[262, 310, 55, 65]] },
+    { n: 55, c: "navy",  parts: [[250, 528, 16, 16]] },
+    { n: 56, c: "navy",  parts: [[382, 280, 14, 14]] },
+    { n: 57, c: "lblue", parts: [[222, 275, 30, 28]] },
+    { n: 58, c: "lblue", parts: [[282, 285, 40, 34]] },
+    { n: 60, c: "navy",  parts: [[232, 408, 14, 14]] },
+    { n: 61, c: "navy",  parts: [[427, 528, 14, 14]] },
+    { n: 62, c: "navy",  parts: [[72, 330, 22, 20]] },
+    { n: 63, c: "lblue", parts: [[100, 332, 38, 26]] },
+    { n: 64, c: "maroon",parts: [[466, 383, 36, 40]] },
+    { n: 65, c: "maroon",parts: [[545, 443, 22, 18]] },
+    { n: 67, c: "maroon",parts: [[260, 170, 46, 36]] },
+    { n: 68, c: "maroon",parts: [[495, 330, 40, 28]] },
+    { n: 70, c: "maroon",parts: [[543, 505, 44, 40]] },
+    { n: 73, c: "maroon",parts: [[220, 175, 22, 18]] },
+    { n: 74, c: "navy",  parts: [[360, 638, 30, 20]] },
+    { n: 75, c: "navy",  parts: [[195, 413, 24, 16]] },
+    { n: 76, c: "navy",  parts: [[328, 510, 14, 14]] },
+    { n: 77, c: "lblue", parts: [[293, 528, 26, 22]] },
+    { n: 78, c: "lblue", parts: [[573, 452, 38, 34]] },
+    { n: 79, c: "navy",  parts: [[310, 481, 14, 14]] },
+    { n: 80, c: "navy",  parts: [[125, 500, 20, 18]] }
+];
+
+const PIN_COLORS = { navy: "#2a2d8f", green: "#3f8f2e", maroon: "#7a1f1f", lblue: "#3f8fb0" };
+const ROOFS = ["#bdb3a3", "#a98b78", "#b8bcc2"];
+
+const buildingNodes = [];
+
+BUILDINGS.forEach(function (b) {
+
+    const g = el("g", { "class": "building" }, bldgLayer);
+    el("title", {}, g, "Building " + b.n + " · click to see the closest parking");
+
+    b.parts.forEach(function (p) {
+        el("rect", { x: p[0] * S + 4, y: p[1] * S + 6, width: p[2] * S, height: p[3] * S,
+                     rx: 4, fill: "#000000", opacity: 0.16 }, g);
+    });
+    b.parts.forEach(function (p) {
+        el("rect", { x: p[0] * S, y: p[1] * S, width: p[2] * S, height: p[3] * S,
+                     rx: 4, "class": "b-wall" }, g);
+        el("rect", { x: p[0] * S + 6, y: p[1] * S + 6, width: Math.max(4, p[2] * S - 12),
+                     height: Math.max(4, p[3] * S - 12), rx: 3,
+                     fill: ROOFS[b.n % 3], "pointer-events": "none" }, g);
+        keepClear(p[0] * S, p[1] * S, p[2] * S, p[3] * S, 8);
+    });
+
+    const top = b.parts[0];
+    const px = (top[0] + top[2] / 2) * S;
+    const py = top[1] * S + 8;
+    const pin = el("g", { "class": "pin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
+    el("title", {}, pin, "Building " + b.n + " · click to see the closest parking");
+    el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
+                 fill: PIN_COLORS[b.c], "class": "pin-body" }, pin);
+    el("text", { x: 0, y: -24, "class": "pin-num" }, pin, String(b.n));
+
+    let minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9;
+    b.parts.forEach(function (q) {
+        minX = Math.min(minX, q[0]);
+        minY = Math.min(minY, q[1]);
+        maxX = Math.max(maxX, q[0] + q[2]);
+        maxY = Math.max(maxY, q[1] + q[3]);
+    });
+
+    const entry = { name: "Building " + b.n, n: b.n, color: b.c, node: g, pin: pin,
+                    cx: (minX + maxX) / 2 * S, cy: (minY + maxY) / 2 * S };
+    buildingNodes.push(entry);
+
+    function pick(ev) {
+        ev.stopPropagation();
+        openForBuilding(entry);
+    }
+    g.addEventListener("click", pick);
+    pin.addEventListener("click", pick);
+});
+
+// DK note: the real map only has numbers on its pins - there's no name
+// directory in the screenshot I was given, so this key can only say
+// "Building N" for each one, not what it actually is. If Benjamin or
+// Dayspring can grab Stetson's building-name list, swap it in here.
+buildingNodes.sort(function (a, b) { return a.n - b.n; });
+const keyList = document.getElementById("buildingKeyList");
+buildingNodes.forEach(function (entry) {
+    const row = h("div", "key-row", undefined, keyList);
+    const dot = h("span", "key-dot", undefined, row);
+    dot.style.background = PIN_COLORS[entry.color];
+    row.appendChild(document.createTextNode("Building " + entry.n));
+    row.addEventListener("click", function () {
+        openForBuilding(entry);
+    });
+});
+
+const gate = el("g", {}, roadLayer);
+""";
+        String part2 = """
+el("circle", { cx: GATE_X, cy: GATE_Y, r: 17, fill: "#ffffff", stroke: "#14532d",
+               "stroke-width": 5 }, gate);
+el("text", { x: GATE_X + 30, y: GATE_Y - 34, "font-size": 18, "font-weight": "bold",
              fill: "#14532d" }, gate, "Main Gate");
 
-// trees: no Random here either. the spots come from a fixed formula so the
-// map looks the same every time
-for (let i = 0; i < 260; i++) {
+for (let i = 0; i < 1100; i++) {
     const tx = (i * 149 + 53) % MAP_W;
     const ty = (i * 97 + i * i * 13) % MAP_H;
     let blocked = false;
@@ -916,52 +1579,140 @@ for (let i = 0; i < 260; i++) {
         }
     }
     if (!blocked) {
-        const r = 9 + (i % 4) * 2;
+        const r = 8 + (i % 4) * 2;
         el("circle", { cx: tx + 2, cy: ty + 3, r: r, fill: "#000000", opacity: 0.1 }, treeLayer);
         el("circle", { cx: tx, cy: ty, r: r, fill: (i % 3 === 0 ? "#7fae6e" : "#8fbb7d") }, treeLayer);
     }
 }
 
-// ---------- 3. draw every stall from the layout ----------
+const STATUS = {};
 
-const ICON_ADA = String.fromCharCode(9855);   // wheelchair symbol
-const ICON_EV = String.fromCharCode(9889);    // lightning bolt
+function statusOf(id) {
+    return STATUS[id] || "unknown";
+}
 
-Object.keys(stalls).forEach(function (id) {
-    const st = stalls[id];
-    const typeClass = "type-" + st.type.toLowerCase();
+function isTaken(s) {
+    return s === "occupied" || s === "reserved" || s === "out_of_service";
+}
 
-    // data-id / data-zone / data-type are for DK-3 to find a stall and paint it
-    const g = el("g", { "class": "stall " + typeClass + " unknown",
-                        "data-id": st.id, "data-zone": st.zone.id,
-                        "data-type": st.type }, stallLayer);
-
-    el("title", {}, g, st.id + " · " + st.type + " · " + cap(st.zone.id) + " lot · status unknown");
-    el("rect", { x: st.x, y: st.y, width: STALL_W, height: STALL_H, rx: 3,
-                 "class": "stall-rect" }, g);
-
-    const num = (st.n < 10 ? "0" : "") + st.n;
-
-    if (st.type === "Regular") {
-        el("text", { x: st.x + STALL_W / 2, y: st.y + STALL_H / 2 + 3, "class": "stall-num" }, g, num);
-    } else {
-        el("text", { x: st.x + STALL_W / 2, y: st.y + 14, "class": "stall-icon" },
-           g, st.type === "ADA" ? ICON_ADA : ICON_EV);
-        el("text", { x: st.x + STALL_W / 2, y: st.y + 27, "class": "stall-num" }, g, num);
+function statusClass(s) {
+    if (s === "free") {
+        return "s-free";
     }
+    return isTaken(s) ? "s-taken" : "s-unknown";
+}
 
-    st.node = g;
-    g.addEventListener("click", function (ev) {
-        ev.stopPropagation();
-        selectStall(st.id);
+function setStatus(map) {
+    Object.keys(map).forEach(function (k) {
+        STATUS[k] = map[k];
     });
+    if (winOpen) {
+        renderWindow();
+    }
+    if (route !== null) {
+        drawCloseup();
+    }
+}
+
+// ---------- DK-3: live status from SK-VIEW ----------
+// statusOf/isTaken/statusClass/setStatus above were already built and
+// waiting on real data - this is the part that actually calls Dayspring's
+// server and feeds it in, instead of leaving STATUS empty forever.
+
+// one id per browser tab, sent as driver_id. this Math.random is a session
+// token, not a stand-in for occupancy - the "no fake occupancy" rule is
+// about spot status, which never comes from Random anywhere in this file.
+const DRIVER_ID = "web-" + Math.random().toString(36).slice(2, 10);
+
+const SK_VIEW_URL = "http://localhost:8765/view";
+
+let liveOk = false;    // did the last fetch succeed?
+let lastAsOf = null;   // as_of from the last good response
+let stallInfo = {};    // id -> the full SK-VIEW stall object (state, age_s, ...)
+let zoneInfo = {};     // id -> the full SK-VIEW zone object (free_count, total_count, ...)
+
+function formatAge(ageSeconds) {
+    if (ageSeconds === undefined || ageSeconds === null) {
+        return "";
+    }
+    if (ageSeconds < 60) {
+        return Math.round(ageSeconds) + "s ago";
+    }
+    if (ageSeconds < 3600) {
+        return Math.round(ageSeconds / 60) + "m ago";
+    }
+    return Math.round(ageSeconds / 3600) + "h ago";
+}
+
+function renderTopBar() {
+    const dot = document.getElementById("updatedDot");
+    const text = document.getElementById("updatedText");
+    if (!dot || !text) {
+        return;
+    }
+    dot.classList.remove("ok", "down");
+    if (liveOk && lastAsOf) {
+        dot.classList.add("ok");
+        text.textContent = "Live \u00b7 as of " + lastAsOf;
+    } else {
+        dot.classList.add("down");
+        text.textContent = "Can't reach live data (SK-VIEW)";
+    }
+}
+
+function fetchStatus() {
+    const url = SK_VIEW_URL + "?vehicle_class=regular&driver_id=" + encodeURIComponent(DRIVER_ID);
+    fetch(url)
+        .then(function (r) {
+            if (!r.ok) {
+                throw new Error("bad status " + r.status);
+            }
+            return r.json();
+        })
+        .then(function (data) {
+            stallInfo = data.status.stalls || {};
+            zoneInfo = data.status.zones || {};
+            const map = {};
+            Object.keys(stallInfo).forEach(function (id) {
+                map[id] = stallInfo[id].state;
+            });
+            lastAsOf = data.as_of;
+            liveOk = true;
+            renderTopBar();
+            setStatus(map);
+        })
+        .catch(function () {
+            liveOk = false;
+            renderTopBar();
+        });
+}
+
+renderTopBar();
+fetchStatus();
+setInterval(fetchStatus, 5000);
+
+zones.forEach(function (z) {
+    z.ids = [];
+});
+Object.keys(stalls).forEach(function (id) {
+    stalls[id].zone.ids.push(id);
 });
 
-// ---------- 4. the route (like a maps app) ----------
+function lotStats(z) {
+    const t = { free: 0, taken: 0, unknown: 0, total: z.ids.length };
+    z.ids.forEach(function (id) {
+        const s = statusOf(id);
+        if (s === "free") {
+            t.free++;
+        } else if (isTaken(s)) {
+            t.taken++;
+        } else {
+            t.unknown++;
+        }
+    });
+    return t;
+}
 
-let selectedId = null;
-
-// the path's corners get rounded so it looks like a real route line
 function roundedPath(pts, r) {
     let d = "M" + pts[0][0] + " " + pts[0][1];
     for (let i = 1; i < pts.length - 1; i++) {
@@ -982,7 +1733,6 @@ function roundedPath(pts, r) {
     return d;
 }
 
-// left or right? y goes DOWN on the screen so the sign is flipped
 function turnWord(h, t) {
     const cross = h[0] * t[1] - h[1] * t[0];
     return cross < 0 ? "left" : "right";
@@ -997,21 +1747,23 @@ function meters(a, b) {
     return Math.round(dist(a, b) / PX_PER_M);
 }
 
-// the drawn path: main gate -> down the main drive -> into the lot's aisle ->
-// along the aisle -> into the stall. it's only a drawing of the way in,
-// the real guidance (which stall to send someone to) is T4's job
-function routeFor(st) {
+// DK note: the gate (on Michigan Ave) and the lot (on Oakdale Ave) are on
+// different roads now, so the drive has an extra leg: north up Woodland
+// Blvd first, then east into the lot. That's the [GATE_X, LOT_ROAD_Y] point
+// added below - everything else here is unchanged from before.
+function fullPath(st) {
     const sx = st.x + STALL_W / 2;
     const sy = st.y + STALL_H / 2;
 
     const pts = [
         [GATE_X, GATE_Y],
-        [GATE_X, st.aisleY],
+        [GATE_X, LOT_ROAD_Y],
+        [st.zone.laneX, LOT_ROAD_Y],
+        [st.zone.laneX, st.aisleY],
         [sx, st.aisleY],
         [sx, sy]
     ];
 
-    // drop doubled points so nothing has zero length
     const clean = [pts[0]];
     for (let i = 1; i < pts.length; i++) {
         if (dist(clean[clean.length - 1], pts[i]) > 0.5) {
@@ -1021,24 +1773,36 @@ function routeFor(st) {
     return clean;
 }
 
+function totalMeters(pts) {
+    let total = 0;
+    for (let i = 1; i < pts.length; i++) {
+        total += meters(pts[i - 1], pts[i]);
+    }
+    return total;
+}
+
 function stepsFor(st, pts) {
     const aisle = st.zone.aisles[st.pair];
     const between = aisle.rowB ? "between rows " + aisle.rowA + " and " + aisle.rowB
                                : "beside row " + aisle.rowA;
 
-    const steps = ["Start at the Main Gate."];
+    // pts: gate, north up Woodland to the lot's road, lane turn-in,
+    // bottom of lane, end of aisle, stall
+    const north = unit(pts[0], pts[1]);
+    const east = unit(pts[1], pts[2]);
+    const down = unit(pts[2], pts[3]);
+    const along = unit(pts[3], pts[4]);
+    const into = unit(pts[4], pts[5]);
 
-    // pts: gate, bend (main drive -> aisle), end of aisle, stall
-    const gateToBend = pts[1];
-    steps.push("Head straight down the main drive for " + meters(pts[0], gateToBend) + " m.");
+    const steps = ["Start at the Main Gate (N Woodland Blvd and E Michigan Ave)."];
+    steps.push("Head north on N Woodland Blvd for " + meters(pts[0], pts[1]) + " m.");
+    steps.push("Turn " + turnWord(north, east) + " onto E Oakdale Ave and go " +
+               meters(pts[1], pts[2]) + " m.");
+    steps.push("Turn " + turnWord(east, down) + " into the " + cap(st.zone.id) +
+               " lot entrance and drive " + meters(pts[2], pts[3]) + " m.");
+    steps.push("Turn " + turnWord(down, along) + " onto the aisle " + between +
+               " and follow it for " + meters(pts[3], pts[4]) + " m.");
 
-    const h1 = unit(pts[0], pts[1]);
-    const t1 = unit(pts[1], pts[2]);
-    steps.push("Turn " + turnWord(h1, t1) + " into the " + cap(st.zone.id) +
-               " lot, onto the aisle " + between + ".");
-    steps.push("Follow the aisle for " + meters(pts[1], pts[2]) + " m.");
-
-    const t2 = unit(pts[2], pts[3]);
     let note = "";
     if (st.type === "ADA") {
         note = " (ADA stall)";
@@ -1046,68 +1810,558 @@ function stepsFor(st, pts) {
     if (st.type === "EV") {
         note = " (EV charging stall)";
     }
-    steps.push(st.id + " is on your " + turnWord(t1, t2) + note + ".");
+    steps.push(st.id + " is on your " + turnWord(along, into) + note + ".");
     return steps;
 }
 
-function clearRoute() {
-    selectedId = null;
+let route = null;
+let winOpen = false;
+let win = null;
+let selectedBuilding = null;
+
+function drawMapRoute() {
     while (routeLayer.firstChild) {
         routeLayer.removeChild(routeLayer.firstChild);
     }
-    Object.keys(stalls).forEach(function (id) {
-        stalls[id].node.classList.remove("selected");
-    });
-    showHelp();
-}
-
-function selectStall(id) {
-    const st = stalls[id];
-    if (!st) {
+    if (route === null) {
         return;
     }
 
-    clearRouteQuiet();
-    selectedId = id;
-    st.node.classList.add("selected");
+    const st = stalls[route.id];
+    // DK note: the route on the MAIN map has to end at the real-photo marker
+    // (markerFor), not at st.zone.laneX - laneX lives in the detailed grid's
+    // own working space, which can be positioned anywhere and isn't what's
+    // drawn on the campus picture anymore. Falls back to the old math only
+    // if a zone has no real marker.
+    const m = markerFor(st.zone);
+    const endX = m ? (m.x + m.w / 2) * S : st.zone.laneX;
+    const endY = m ? m.y * S : (LOT_ROAD_Y + ROAD_HALF + 34);
+    const pts = [[GATE_X, GATE_Y], [GATE_X, LOT_ROAD_Y], [endX, LOT_ROAD_Y], [endX, endY]];
+    const d = roundedPath(pts, 40);
 
-    const pts = routeFor(st);
-    const d = roundedPath(pts, 14);
+    const g = el("g", { "class": route.started ? "route-g" : "route-g preview" }, routeLayer);
+    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 20,
+                 "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+    el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 12,
+                 "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
 
-    // white outline, blue line, then moving dashes on top
-    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 10,
-                 "stroke-linecap": "round", "stroke-linejoin": "round" }, routeLayer);
-    el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 6,
-                 "stroke-linecap": "round", "stroke-linejoin": "round" }, routeLayer);
-    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 2,
-                 "stroke-linecap": "round", "class": "route-flow", opacity: 0.8 }, routeLayer);
+    el("circle", { cx: GATE_X, cy: GATE_Y, r: 14, fill: "#ffffff", stroke: "#1a73e8",
+                   "stroke-width": 6 }, routeLayer);
 
-    // start dot at the gate
-    el("circle", { cx: pts[0][0], cy: pts[0][1], r: 9, fill: "#ffffff",
-                   stroke: "#1a73e8", "stroke-width": 4 }, routeLayer);
+    const e = el("g", { transform: "translate(" + pts[2][0] + " " + endY + ")" }, routeLayer);
+    el("circle", { cx: 0, cy: 0, r: 20, fill: "#1a73e8", stroke: "#ffffff",
+                   "stroke-width": 4 }, e);
+    el("text", { x: 0, y: 8, "text-anchor": "middle", fill: "#ffffff", "font-size": 22,
+                 "font-weight": "bold" }, e, "P");
+    el("text", { x: 30, y: 8, "font-size": 20, "font-weight": "bold", fill: "#0b3d91",
+                 stroke: "#ffffff", "stroke-width": 5, "paint-order": "stroke" }, e,
+       cap(st.zone.id) + " lot entrance");
 
-    // red pin on the stall
-    const end = pts[pts.length - 1];
-    const pin = el("g", { transform: "translate(" + end[0] + " " + (end[1] - 4) + ")" }, routeLayer);
-    el("path", { d: "M0 0 C-14 -16 -12 -34 0 -34 C12 -34 14 -16 0 0 Z", fill: "#d93025",
-                 stroke: "#ffffff", "stroke-width": 2 }, pin);
-    el("circle", { cx: 0, cy: -22, r: 4.5, fill: "#ffffff" }, pin);
-
-    showRoute(st, pts);
-    scrollToStall(st);
+    drawCloseup();
 }
 
-// same as clearRoute but doesn't redraw the help panel (selectStall redraws it)
-function clearRouteQuiet() {
-    while (routeLayer.firstChild) {
-        routeLayer.removeChild(routeLayer.firstChild);
+// the close-up inset, top-right of the map. DK note: this shows where the
+// PERSON is (the Main Gate - the only "current location" this app has),
+// not the destination stall. It redraws every time drawMapRoute() does, so
+// it appears as soon as a spot is picked and tracks whichever direction
+// the route leaves the gate in.
+function drawCloseup() {
+    const box = document.getElementById("closeup");
+    const titleEl = document.getElementById("closeupTitle");
+    const ageEl = document.getElementById("closeupAge");
+    const closeSvg = document.getElementById("closeupSvg");
+
+    while (closeSvg.firstChild) {
+        closeSvg.removeChild(closeSvg.firstChild);
     }
-    Object.keys(stalls).forEach(function (id) {
-        stalls[id].node.classList.remove("selected");
+
+    if (route === null) {
+        box.classList.remove("show");
+        return;
+    }
+    box.classList.add("show");
+    titleEl.textContent = "You are here \u00b7 Main Gate";
+
+    // DK-3: the picked stall's own age, so the close-up says how fresh the
+    // claim is, not just where the gate is
+    const routeAge = stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
+    ageEl.textContent = routeAge ? "Your spot's last update: " + routeAge : "";
+
+    const HALF = 130;
+    const x0 = GATE_X - HALF;
+    const x1 = GATE_X + HALF;
+    const y0 = GATE_Y - HALF * 0.8;
+    const y1 = GATE_Y + HALF * 0.8;
+
+    closeSvg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+
+    el("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: "#cfe3c1" }, closeSvg);
+
+    // the two roads that cross at the gate (Woodland Blvd and Michigan Ave)
+    el("rect", { x: x0, y: GATE_Y - ROAD_HALF, width: x1 - x0, height: ROAD_HALF * 2,
+                 fill: "#9aa0a6" }, closeSvg);
+    el("rect", { x: GATE_X - ROAD_HALF, y: y0, width: ROAD_HALF * 2, height: y1 - y0,
+                 fill: "#9aa0a6" }, closeSvg);
+
+    // any nearby buildings, close enough to show up in this tight a crop
+    BUILDINGS.forEach(function (b) {
+        b.parts.forEach(function (p) {
+            const bx = p[0] * S, by = p[1] * S, bw = p[2] * S, bh = p[3] * S;
+            if (bx + bw < x0 || bx > x1 || by + bh < y0 || by > y1) {
+                return;
+            }
+            el("rect", { x: bx, y: by, width: bw, height: bh, rx: 3, fill: "#ddd2c2",
+                         stroke: "#a99a86", "stroke-width": 1.5 }, closeSvg);
+        });
+    });
+
+    // the gate marker itself
+    el("circle", { cx: GATE_X, cy: GATE_Y, r: 10, fill: "#ffffff", stroke: "#14532d",
+                   "stroke-width": 4 }, closeSvg);
+
+    // the start of the route, leaving the gate
+    const st = stalls[route.id];
+    const m = markerFor(st.zone);
+    const headingUp = [GATE_X, Math.max(y0, GATE_Y - HALF)];
+    const d = roundedPath([[GATE_X, GATE_Y], headingUp], 10);
+    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 8,
+                 "stroke-linecap": "round" }, closeSvg);
+    el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 4,
+                 "stroke-linecap": "round",
+                 "class": route.started ? "" : "route-flow" }, closeSvg);
+
+    el("text", { x: GATE_X + 14, y: y0 + 16, "font-size": 11, "font-weight": "bold",
+                 fill: "#14532d" }, closeSvg, "Heading to " + (m ? cap(st.zone.id) + " lot" : "the lot"));
+}
+
+function selectSpot(id) {
+    route = { id: id, started: false };
+    drawMapRoute();
+    refreshSelection();
+    showHelp();
+}
+
+function startRoute() {
+    if (route === null) {
+        return;
+    }
+    route.started = true;
+    drawMapRoute();
+    closeWindow();
+    showRoute();
+}
+
+function endRoute() {
+    route = null;
+    drawMapRoute();
+    markBuilding(null);
+    selectedBuilding = null;
+    if (winOpen) {
+        refreshSelection();
+    }
+    showHelp();
+}
+
+const winBack = document.getElementById("winBack");
+const winTitle = document.getElementById("winTitle");
+const winSub = document.getElementById("winSub");
+const winBody = document.getElementById("winBody");
+const winFoot = document.getElementById("winFoot");
+
+function h(tag, cls, text, parent) {
+    const e = document.createElement(tag);
+    if (cls) {
+        e.className = cls;
+    }
+    if (text !== undefined) {
+        e.textContent = text;
+    }
+    if (parent) {
+        parent.appendChild(e);
+    }
+    return e;
+}
+
+function closestLots(cx, cy) {
+    const list = zones.map(function (z) {
+        return { z: z, d: dist([cx, cy], [z.x + z.w / 2, z.y + z.h / 2]) };
+    });
+    list.sort(function (a, b) {
+        return a.d - b.d;
+    });
+    return list.slice(0, 2).map(function (item, i) {
+        return { z: item.z, rank: i, meters: Math.round(item.d / PX_PER_M / 5) * 5 };
     });
 }
 
-// ---------- 5. the side panel ----------
+function openForBuilding(entry) {
+    route = null;
+    drawMapRoute();
+    selectedBuilding = entry;
+    markBuilding(entry);
+
+    win = {
+        title: "Parking near " + entry.name,
+        sub: "The two closest lots to this building. Pick a spot to preview your route.",
+        from: entry.name,
+        lots: closestLots(entry.cx, entry.cy)
+    };
+    openWindow();
+}
+
+// clicking a lot's pavement or its "P" pin on the main map opens straight
+// to that lot's window, same as clicking a building does for its two
+// closest lots - just with one lot already picked instead of two
+function openForLot(z) {
+    route = null;
+    drawMapRoute();
+    markBuilding(null);
+    selectedBuilding = null;
+
+    win = {
+        title: cap(z.id) + " lot",
+        sub: "Pick a spot to preview your route.",
+        from: null,
+        lots: [{ z: z, rank: -1, meters: 0 }]
+    };
+    openWindow();
+}
+
+function openForStall(id) {
+    const st = stalls[id];
+    win = {
+        title: "Spot " + id,
+        sub: "Pick a spot to preview your route.",
+        from: null,
+        lots: [{ z: st.zone, rank: -1, meters: 0 }]
+    };
+    route = { id: id, started: false };
+    drawMapRoute();
+    openWindow();
+}
+
+function openForRoute() {
+    const st = stalls[route.id];
+    win = {
+        title: "Spot " + route.id,
+        sub: "Your route is started. Pick another spot to change it.",
+        from: null,
+        lots: [{ z: st.zone, rank: -1, meters: 0 }]
+    };
+    openWindow();
+}
+
+function openWindow() {
+    winOpen = true;
+    winBack.classList.remove("hidden");
+    renderWindow();
+    showHelp();
+}
+
+function closeWindow() {
+    winOpen = false;
+    winBack.classList.add("hidden");
+
+    if (route !== null && !route.started) {
+        route = null;
+        drawMapRoute();
+    }
+    if (route === null) {
+        markBuilding(null);
+        selectedBuilding = null;
+    }
+    showHelp();
+}
+
+document.getElementById("winX").addEventListener("click", closeWindow);
+
+winBack.addEventListener("click", function (ev) {
+    if (ev.target === winBack) {
+        closeWindow();
+    }
+});
+
+const cards = [];
+
+function passes(id) {
+    const st = stalls[id];
+    if (filter !== "All" && st.type !== filter) {
+        return false;
+    }
+    if (query !== "" && id.toUpperCase().indexOf(query) < 0) {
+        return false;
+    }
+    return true;
+}
+
+function lotDiagram(z, parent) {
+
+    const x0 = z.x - LOT_PAD - 6;
+    const x1 = z.x + z.w + LOT_PAD + 6;
+    const y0 = LOT_ROAD_Y + ROAD_HALF - 46;
+    const y1 = z.y + z.h + LOT_PAD + 6;
+
+    const root = document.createElementNS(SVGNS, "svg");
+    root.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+    root.setAttribute("class", "lot-svg");
+    parent.appendChild(root);
+
+    el("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: "#cfe3c1" }, root);
+
+    el("rect", { x: x0, y: y0, width: x1 - x0, height: LOT_ROAD_Y + ROAD_HALF - y0,
+                 fill: "#9aa0a6" }, root);
+    el("line", { x1: x0, y1: LOT_ROAD_Y, x2: x1, y2: LOT_ROAD_Y, stroke: "#ffffff", "stroke-width": 2,
+                 "stroke-dasharray": "14 12", opacity: 0.7 }, root);
+    el("text", { x: x0 + 12, y: y0 + 17, "class": "road-label", "text-anchor": "start",
+                 "font-size": 12 }, root, "E OAKDALE AVE");
+
+    el("rect", { x: z.x - LOT_PAD, y: z.y - LOT_PAD, width: z.w + 2 * LOT_PAD,
+                 height: z.h + 2 * LOT_PAD, rx: 12, fill: "#8d9299", stroke: "#6b7280",
+                 "stroke-width": 3 }, root);
+
+    el("rect", { x: z.x, y: LOT_ROAD_Y + ROAD_HALF - 2, width: LANE_W,
+                 height: (z.y + z.h) - (LOT_ROAD_Y + ROAD_HALF - 2), fill: "#8d9299" }, root);
+    el("line", { x1: z.laneX, y1: LOT_ROAD_Y + ROAD_HALF, x2: z.laneX, y2: z.y + z.h,
+                 stroke: "#ffffff", "stroke-width": 2, "stroke-dasharray": "10 10",
+                 opacity: 0.6 }, root);
+
+    z.aisles.forEach(function (a) {
+        el("rect", { x: z.x + LANE_W - 6, y: a.y - AISLE_H / 2, width: z.w - LANE_W + 12,
+                     height: AISLE_H, fill: "#7d838a" }, root);
+        el("line", { x1: z.x + LANE_W, y1: a.y, x2: z.x + z.w, y2: a.y, stroke: "#ffffff",
+                     "stroke-width": 2, "stroke-dasharray": "10 10", opacity: 0.6 }, root);
+    });
+
+    const nodes = {};
+    z.ids.forEach(function (id) {
+        const st = stalls[id];
+        const g = el("g", { "class": "stall type-" + st.type.toLowerCase() + " " +
+                                     statusClass(statusOf(id)),
+                            "data-id": id, "data-zone": z.id, "data-type": st.type }, root);
+
+        el("title", {}, g, id + " · " + st.type + " · status " + statusOf(id).replace("_", " "));
+        el("rect", { x: st.x, y: st.y, width: STALL_W, height: STALL_H, rx: 5,
+                     "class": "stall-rect" }, g);
+
+        const num = (st.n < 10 ? "0" : "") + st.n;
+        if (st.type === "Regular") {
+            el("text", { x: st.x + STALL_W / 2, y: st.y + STALL_H / 2 + 4,
+                         "class": "stall-num" }, g, num);
+        } else {
+            el("text", { x: st.x + STALL_W / 2, y: st.y + 15, "class": "stall-icon" },
+               g, st.type === "ADA" ? ICON_ADA : ICON_EV);
+            el("text", { x: st.x + STALL_W / 2, y: st.y + 30, "class": "stall-num" }, g, num);
+        }
+
+        if (!passes(id)) {
+            g.classList.add("dim");
+        }
+        g.addEventListener("click", function () {
+            selectSpot(id);
+        });
+        nodes[id] = g;
+    });
+
+    const routeG = el("g", { "pointer-events": "none" }, root);
+    return { svg: root, nodes: nodes, routeG: routeG, x0: x0 };
+}
+
+const ICON_ADA = String.fromCharCode(9855);
+const ICON_EV = String.fromCharCode(9889);
+
+function drawLotRoute(card) {
+    while (card.routeG.firstChild) {
+        card.routeG.removeChild(card.routeG.firstChild);
+    }
+    if (route === null || stalls[route.id].zone !== card.z) {
+        return;
+    }
+    const st = stalls[route.id];
+    const z = card.z;
+    const sx = st.x + STALL_W / 2;
+    const sy = st.y + STALL_H / 2;
+    const pts = [[card.x0 + 14, LOT_ROAD_Y], [z.laneX, LOT_ROAD_Y], [z.laneX, st.aisleY],
+                 [sx, st.aisleY], [sx, sy]];
+    const d = roundedPath(pts, 14);
+
+    const g = el("g", { "class": route.started ? "route-g" : "route-g preview" }, card.routeG);
+    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 11,
+                 "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+    el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 6,
+                 "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+
+    const pin = el("g", { transform: "translate(" + sx + " " + (sy - 4) + ") scale(1.2)" },
+                   card.routeG);
+    el("path", { d: "M0 0 C-14 -16 -12 -34 0 -34 C12 -34 14 -16 0 0 Z", fill: "#d93025",
+                 stroke: "#ffffff", "stroke-width": 2 }, pin);
+    el("circle", { cx: 0, cy: -22, r: 4.5, fill: "#ffffff" }, pin);
+}
+
+function lotCard(item) {
+    const z = item.z;
+    const card = { z: z, spots: {} };
+
+    const box = h("div", "lot-card" + (item.rank === 0 ? " best" : ""));
+    card.box = box;
+
+    const head = h("div", "lot-head", undefined, box);
+    if (item.rank === 0) {
+        h("span", "rank r0", "CLOSEST", head);
+    } else if (item.rank === 1) {
+        h("span", "rank r1", "2ND CLOSEST", head);
+    }
+    h("span", "lot-name", cap(z.id) + " lot", head);
+
+    const stats = lotStats(z);
+    const full = stats.total > 0 && stats.free === 0 && stats.unknown === 0;
+    if (full) {
+        h("span", "rank rfull", "FULL", head);
+    }
+
+    if (item.rank >= 0 && win.from) {
+        h("div", "lot-sub", "about " + item.meters + " m from " + win.from +
+                            " (straight line)", box);
+    }
+
+    const line = h("div", "stat-line", undefined, box);
+    [["free", "#1b8a3a", stats.free], ["taken", "#d62b2b", stats.taken],
+     ["unknown", "#6b7280", stats.unknown]].forEach(function (s) {
+        const item2 = h("span", "stat", undefined, line);
+        const dot = h("span", "k", undefined, item2);
+        dot.style.background = s[1];
+        item2.appendChild(document.createTextNode(s[2] + " " + s[0]));
+    });
+
+    // DK-3: the zone's own claim from SK-VIEW (status.zones), which can
+    // still carry a count even when the individual stalls have aged into
+    // unknown - this is separate from stats above, which only counts what
+    // the stalls themselves say
+    const zClaim = zoneInfo[z.id];
+    if (zClaim && zClaim.total_count !== undefined) {
+        const age = formatAge(zClaim.age_s);
+        h("div", "lot-sub", "Zone claim: " + zClaim.free_count + " / " + zClaim.total_count +
+                            " free" + (age ? " \u00b7 " + age : ""), box);
+    }
+
+    const dg = lotDiagram(z, box);
+    card.svg = dg.svg;
+    card.nodes = dg.nodes;
+    card.routeG = dg.routeG;
+    card.x0 = dg.x0;
+
+    const ids = z.ids.filter(passes);
+    const freeIds = ids.filter(function (id) { return statusOf(id) === "free"; });
+    let shown = freeIds;
+    let heading = "Available spots (" + freeIds.length + ")";
+
+    if (freeIds.length === 0) {
+        shown = ids.filter(function (id) { return !isTaken(statusOf(id)); });
+        heading = "Spots · live status unknown (" + shown.length + ")";
+    }
+
+    shown = shown.slice().sort(function (a, b) {
+        return totalMeters(fullPath(stalls[a])) - totalMeters(fullPath(stalls[b]));
+    });
+
+    h("div", "list-title", heading, box);
+    if (freeIds.length === 0) {
+        h("div", "list-note", liveOk
+            ? "No spot here is currently claimed free. Pick any spot to preview the way in."
+            : "Can't reach live data right now, so no spot can be called available. " +
+              "Pick any spot to preview the way in.", box);
+    }
+
+    const list = h("div", "spot-list", undefined, box);
+    if (shown.length === 0) {
+        h("div", "list-note", "No spots to show for this filter.", list);
+    }
+    shown.forEach(function (id) {
+        const st = stalls[id];
+        const b = h("button", "spot", undefined, list);
+        const dot = h("span", "k", undefined, b);
+        dot.style.background = statusOf(id) === "free" ? "#1b8a3a" : "#6b7280";
+        b.appendChild(document.createTextNode(id));
+        if (st.type !== "Regular") {
+            h("span", "tag " + st.type.toLowerCase(), st.type, b);
+        }
+        h("span", "dist", totalMeters(fullPath(st)) + " m", b);
+        const age = stallInfo[id] ? formatAge(stallInfo[id].age_s) : "";
+        if (age) {
+            h("span", "spot-age", age, b);
+        }
+        b.addEventListener("click", function () {
+            selectSpot(id);
+        });
+        card.spots[id] = b;
+    });
+
+    return card;
+}
+
+function renderWindow() {
+    winTitle.textContent = win.title;
+    winSub.textContent = win.sub;
+
+    while (winBody.firstChild) {
+        winBody.removeChild(winBody.firstChild);
+    }
+    cards.length = 0;
+
+    win.lots.forEach(function (item) {
+        const card = lotCard(item);
+        cards.push(card);
+        winBody.appendChild(card.box);
+    });
+
+    refreshSelection();
+}
+
+function refreshSelection() {
+    if (!winOpen) {
+        return;
+    }
+    cards.forEach(function (card) {
+        Object.keys(card.nodes).forEach(function (id) {
+            card.nodes[id].classList.toggle("selected", route !== null && route.id === id);
+        });
+        Object.keys(card.spots).forEach(function (id) {
+            card.spots[id].classList.toggle("selected", route !== null && route.id === id);
+        });
+        drawLotRoute(card);
+    });
+
+    while (winFoot.firstChild) {
+        winFoot.removeChild(winFoot.firstChild);
+    }
+
+    const info = h("div", "foot-info", undefined, winFoot);
+    if (route === null) {
+        h("div", "foot-main", "No spot picked yet", info);
+        h("div", "foot-sub", "Pick a spot to see your route. It flashes blue as a preview.", info);
+    } else {
+        const st = stalls[route.id];
+        h("div", "foot-main", route.id + " · " + cap(st.zone.id) + " lot · about " +
+                              totalMeters(fullPath(st)) + " m", info);
+        h("div", "foot-sub", route.started
+            ? "Route started (solid blue)."
+            : "Previewing (flashing blue). Press Start route to begin.", info);
+    }
+
+    const legend = h("div", "win-legend", undefined, winFoot);
+    [["Free", "#1b8a3a"], ["Taken", "#d62b2b"], ["Unknown", "#6b7280"]].forEach(function (l) {
+        const s = h("span", "stat", undefined, legend);
+        const dot = h("span", "k", undefined, s);
+        dot.style.background = l[1];
+        s.appendChild(document.createTextNode(l[0]));
+    });
+
+    const cancel = h("button", "btn", "Cancel", winFoot);
+    cancel.addEventListener("click", closeWindow);
+
+    const start = h("button", "btn primary", "Start route", winFoot);
+    start.disabled = (route === null || route.started);
+    start.addEventListener("click", startRoute);
+}
 
 const side = document.getElementById("side");
 
@@ -1118,77 +2372,58 @@ function clearSide() {
 }
 
 function add(tag, text, cls) {
-    const e = document.createElement(tag);
-    if (text !== undefined) {
-        e.textContent = text;
-    }
-    if (cls) {
-        e.className = cls;
-    }
-    side.appendChild(e);
-    return e;
+    return h(tag, cls, text, side);
 }
 
-function legendRow(color, outline, text) {
-    const row = document.createElement("div");
-    row.className = "legend-row";
-    const sw = document.createElement("div");
-    sw.className = "sw";
-    sw.style.background = color;
-    sw.style.outlineColor = outline;
-    row.appendChild(sw);
-    row.appendChild(document.createTextNode(text));
-    side.appendChild(row);
-}
-
-// what the panel says before anything is clicked
 function showHelp() {
+    if (route !== null && route.started) {
+        showRoute();
+        return;
+    }
     clearSide();
     add("h2", LAYOUT.lot);
-    add("div", "Click any stall to see the way in from the Main Gate.", "sub");
 
-    legendRow("#cfd2d6", "#9ca3af", "Regular stall");
-    legendRow("#c9d8f5", "#2563eb", "ADA stall");
-    legendRow("#e1d3f5", "#7c3aed", "EV charging stall");
+    if (winOpen) {
+        add("div", "Pick a spot in the window. The route flashes blue on the map until " +
+                   "you press Start route.", "sub");
+        return;
+    }
 
-    add("div", "Every stall is gray because live free / taken data isn't connected " +
-               "yet. Free and taken colors arrive with the live feed.", "status-note");
+    add("div", "Click a building on the map to see the closest parking lots.", "sub");
+    add("div", "The lots aren't shown on the map. They open in a window when you pick " +
+               "a building. You can also type a spot id (like N1-06) in the search box " +
+               "and press Enter.", "status-note");
 }
 
-// what the panel says once a stall is picked
-function showRoute(st, pts) {
+function showRoute() {
     clearSide();
+    const st = stalls[route.id];
+    const pts = fullPath(st);
 
-    add("h2", st.id);
+    add("h2", route.id);
     add("div", cap(st.zone.id) + " lot · row " + st.row + " · spot " + st.n, "sub");
 
     const badges = add("div");
-    const b1 = document.createElement("span");
-    b1.className = "badge" + (st.type === "ADA" ? " ada" : (st.type === "EV" ? " ev" : ""));
-    b1.textContent = st.type;
-    badges.appendChild(b1);
+    const b1 = h("span", "badge" + (st.type === "ADA" ? " ada" : (st.type === "EV" ? " ev" : "")),
+                 st.type, badges);
+    h("span", "badge", "Route started", badges);
 
-    let total = 0;
-    for (let i = 1; i < pts.length; i++) {
-        total += meters(pts[i - 1], pts[i]);
-    }
-    add("div", "about " + total + " m", "total");
+    add("div", "about " + totalMeters(pts) + " m", "total");
 
     const ol = add("ol", undefined, "steps");
     stepsFor(st, pts).forEach(function (text) {
-        const li = document.createElement("li");
-        li.textContent = text;
-        ol.appendChild(li);
+        h("li", undefined, text, ol);
     });
 
-    add("div", "Live status: unknown. This shows the way to the stall, not whether " +
-               "it's free. Check the live status once it's connected.", "status-note");
+    add("div", "Live status: " + statusOf(route.id).replace("_", " ") + ". This shows the " +
+               "way to the spot, it doesn't promise the spot is free.", "status-note");
 
-    const btn = add("button", "Clear route", "btn");
-    btn.addEventListener("click", clearRoute);
+    const show = add("button", "Show lot", "btn");
+    show.addEventListener("click", openForRoute);
+
+    const end = add("button", "End route", "btn");
+    end.addEventListener("click", endRoute);
 }
-
-// ---------- 6. filter chips + search (just dim stalls, no occupancy) ----------
 
 let filter = "All";
 let query = "";
@@ -1204,7 +2439,7 @@ function countType(t) {
 }
 
 const chipNames = [
-    { key: "All", text: "All stalls" },
+    { key: "All", text: "All spots" },
     { key: "Regular", text: "Regular (" + countType("Regular") + ")" },
     { key: "ADA", text: "ADA (" + countType("ADA") + ")" },
     { key: "EV", text: "EV Charging (" + countType("EV") + ")" }
@@ -1217,29 +2452,14 @@ function drawChips() {
         chipBox.removeChild(chipBox.firstChild);
     }
     chipNames.forEach(function (c) {
-        const d = document.createElement("div");
-        d.className = "chip" + (filter === c.key ? " on" : "");
-        d.textContent = c.text;
+        const d = h("div", "chip" + (filter === c.key ? " on" : ""), c.text, chipBox);
         d.addEventListener("click", function () {
             filter = c.key;
             drawChips();
-            applyDim();
+            if (winOpen) {
+                renderWindow();
+            }
         });
-        chipBox.appendChild(d);
-    });
-}
-
-function applyDim() {
-    Object.keys(stalls).forEach(function (id) {
-        const st = stalls[id];
-        let dim = false;
-        if (filter !== "All" && st.type !== filter) {
-            dim = true;
-        }
-        if (query !== "" && id.toUpperCase().indexOf(query) < 0) {
-            dim = true;
-        }
-        st.node.classList.toggle("dim", dim);
     });
 }
 
@@ -1247,21 +2467,30 @@ const searchBox = document.getElementById("search");
 
 searchBox.addEventListener("input", function () {
     query = searchBox.value.trim().toUpperCase();
-    applyDim();
+    if (winOpen) {
+        renderWindow();
+    }
 });
 
 searchBox.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter") {
         const wanted = searchBox.value.trim().toUpperCase();
         if (stalls[wanted]) {
-            selectStall(wanted);
+            query = "";
+            openForStall(wanted);
         }
     }
 });
 
 drawChips();
 
-// ---------- 7. zoom + scrolling ----------
+function markBuilding(entry) {
+    buildingNodes.forEach(function (b) {
+        const on = (entry !== null && b === entry);
+        b.node.classList.toggle("selected", on);
+        b.pin.classList.toggle("selected", on);
+    });
+}
 
 const scroller = document.getElementById("scroll");
 let zoom = 1;
@@ -1272,21 +2501,11 @@ function applyZoom() {
 }
 
 function fit() {
-    // make the whole map fit the box on load
-    zoom = Math.max(0.4, Math.min(1.2, scroller.clientWidth / MAP_W));
+    zoom = Math.max(0.25, Math.min(1.2,
+        Math.min(scroller.clientWidth / MAP_W, scroller.clientHeight / MAP_H)));
     applyZoom();
     scroller.scrollLeft = 0;
     scroller.scrollTop = 0;
-}
-
-function scrollToStall(st) {
-    const cx = (st.x + STALL_W / 2) * zoom;
-    const cy = (st.y + STALL_H / 2) * zoom;
-    scroller.scrollTo({
-        left: Math.max(0, cx - scroller.clientWidth / 2),
-        top: Math.max(0, cy - scroller.clientHeight / 2),
-        behavior: "smooth"
-    });
 }
 
 document.getElementById("zin").addEventListener("click", function () {
@@ -1295,18 +2514,51 @@ document.getElementById("zin").addEventListener("click", function () {
 });
 
 document.getElementById("zout").addEventListener("click", function () {
-    zoom = Math.max(0.4, zoom - 0.25);
+    zoom = Math.max(0.25, zoom - 0.25);
     applyZoom();
 });
 
 document.getElementById("zfit").addEventListener("click", fit);
 
-// click empty map or press Esc to drop the route
-svg.addEventListener("click", clearRoute);
+let pan = null;
+
+svg.addEventListener("pointerdown", function (ev) {
+    if (ev.button !== undefined && ev.button !== 0) {
+        return;
+    }
+    if (ev.target.closest && ev.target.closest(".building, .pin")) {
+        return;
+    }
+    pan = { x: ev.clientX, y: ev.clientY, left: scroller.scrollLeft,
+            top: scroller.scrollTop, moved: false, id: ev.pointerId };
+});
+
+svg.addEventListener("pointermove", function (ev) {
+    if (pan === null) {
+        return;
+    }
+    const dx = ev.clientX - pan.x;
+    const dy = ev.clientY - pan.y;
+    if (!pan.moved && Math.hypot(dx, dy) < 6) {
+        return;
+    }
+    if (!pan.moved) {
+        pan.moved = true;
+        svg.setPointerCapture(pan.id);
+    }
+    scroller.scrollLeft = pan.left - dx;
+    scroller.scrollTop = pan.top - dy;
+});
+
+function endPan() {
+    pan = null;
+}
+svg.addEventListener("pointerup", endPan);
+svg.addEventListener("pointercancel", endPan);
 
 document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape") {
-        clearRoute();
+    if (ev.key === "Escape" && winOpen) {
+        closeWindow();
     }
 });
 
@@ -1318,11 +2570,8 @@ showHelp();
 </body>
 </html>
 """;
+        String page = part1 + part2;
 
-        // fill in the layout json. replace() not formatted() (see note above)
         return page.replace("__LAYOUT_JSON__", buildLayoutJson(layout));
     }
 }
-
-
-
