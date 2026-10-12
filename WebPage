@@ -1,5 +1,4 @@
 // box: T6 · lane: DK · read BRIDGES.md before editing
-package parkfind;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
