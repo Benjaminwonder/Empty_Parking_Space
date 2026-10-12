@@ -311,8 +311,11 @@ class ContinuousAdapter(Adapter):
 class SnapshotAdapter(Adapter):
     """Poll every N minutes. Emits every stall (5/15-min) or every zone (hourly)."""
 
-    def __init__(self, every_min: int, grain: Literal["stall", "zone"], cadence_class: Cadence, source: str):
+    def __init__(self, every_min: int, grain: Literal["stall", "zone"], cadence_class: Cadence, source: str,
+                 ttl: str | None = None):
         self.every_min = every_min
+        # A claim must outlive the wait for the next poll, or the lot goes unknown between polls.
+        self.ttl = ttl or TTL_BY_CADENCE[cadence_class]
         self.grain = grain
         self.cadence_class = cadence_class
         self.source = source
@@ -340,7 +343,7 @@ class SnapshotAdapter(Adapter):
         if not self.due(t):
             return []
         iso = _iso(t)
-        ttl = TTL_BY_CADENCE[self.cadence_class]
+        ttl = self.ttl
         conf = CONFIDENCE_BY_CADENCE[self.cadence_class]
         events: list[OccupancyEvent] = []
         if self.grain == "stall":
@@ -379,36 +382,55 @@ class SnapshotAdapter(Adapter):
 
 
 class EventOnlyAdapter(Adapter):
-    """Gate counter. +1 / −1 lot movement. Cannot name a stall."""
+    """Gate counter. Counts cars in and out, so it knows how many are inside. Cannot name a stall."""
 
     cadence_class: Cadence = "event_only"
     source = "sim.gate"
+    COUNT_EVERY_S = 300
+
+    def __init__(self) -> None:
+        self._inside = 0          # the gate's own running count since the lot opened (empty)
+        self._last_count: datetime | None = None
 
     def emit(self, world: World, t: datetime) -> list[OccupancyEvent]:
-        """why: the cheapest sensor: a gate that only knows a car came in or went out.
-        boundary: lot-grain only; the note carries the direction and nothing the gate could not see.
+        """why: the cheapest sensor: a gate that only sees cars pass, yet can still say how many are inside.
+        boundary: lot-grain only; the count is the gate's own in-minus-out, never read from the World's stalls.
         ugly: the World knows which stall changed; writing it here would leak truth into the feed (X2).
+        A real gate drifts (missed cars); this one is perfect, so its count is kinder than reality.
         """
         events = []
         iso = _iso(t)
+        total = len(world.stalls)
+        moved = False
         for _stall_id, old, new in world.last_flips:
             if old == new:
                 continue
-            events.append(
-                OccupancyEvent(
-                    stall_id=None,
-                    zone_id=None,
-                    lot_id=world.lot_id,
-                    state=new,
-                    confidence=CONFIDENCE_BY_CADENCE[self.cadence_class],
-                    source=self.source,
-                    observed_at=iso,
-                    ttl=TTL_BY_CADENCE[self.cadence_class],
-                    cadence_class=self.cadence_class,
-                    note="gate +1 car in" if new == "occupied" else "gate -1 car out",
-                )
-            )
+            moved = True
+            self._inside += 1 if new == "occupied" else -1
+            events.append(self._event(world, iso, total, "gate +1 car in" if new == "occupied" else "gate -1 car out"))
+        # Report the count every few minutes even when nobody moves, so the claim does not just expire.
+        if not moved and (self._last_count is None or (t - self._last_count).total_seconds() >= self.COUNT_EVERY_S):
+            events.append(self._event(world, iso, total, "gate count"))
+        if events:
+            self._last_count = t
         return events
+
+    def _event(self, world: World, iso: str, total: int, note: str) -> OccupancyEvent:
+        free = max(0, total - self._inside)
+        return OccupancyEvent(
+            stall_id=None,
+            zone_id=None,
+            lot_id=world.lot_id,
+            state="free" if free > 0 else "occupied",
+            confidence=CONFIDENCE_BY_CADENCE[self.cadence_class],
+            source=self.source,
+            observed_at=iso,
+            ttl=TTL_BY_CADENCE[self.cadence_class],
+            cadence_class=self.cadence_class,
+            free_count=free,
+            total_count=total,
+            note=note,
+        )
 
 
 def _iso(t: datetime) -> str:
@@ -422,7 +444,7 @@ def _iso(t: datetime) -> str:
 CADENCE_PRESETS = {
     "continuous": lambda: ContinuousAdapter(),
     "periodic_5min": lambda: SnapshotAdapter(5, "stall", "periodic_snapshot", "sim.snapshot_5min"),
-    "periodic_15min": lambda: SnapshotAdapter(15, "stall", "periodic_snapshot", "sim.snapshot_15min"),
+    "periodic_15min": lambda: SnapshotAdapter(15, "stall", "periodic_snapshot", "sim.snapshot_15min", ttl="24m"),
     "hourly": lambda: SnapshotAdapter(60, "zone", "slow_snapshot", "sim.hourly_zone"),
     "event_only": lambda: EventOnlyAdapter(),
 }

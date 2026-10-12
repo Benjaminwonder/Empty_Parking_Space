@@ -4,7 +4,7 @@ The one occupancy event: the form every sensor fills in and every reader reads.
 
 Not a parking stall. A *claim about* a stall, zone or lot: what a sensor saw,
 how sure it was, when it saw it, and how long that claim stays good. The stall
-itself lives in lot_commuter_north.json; the truth about it lives only in the
+itself lives in campus.json; the truth about it lives only in the
 simulator's World. This file sits between them.
 
 The simulator writes these today; a camera adapter writes them after the grant.

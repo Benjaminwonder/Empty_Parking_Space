@@ -86,6 +86,24 @@ Where things live:
 - `parkfind/`: the program itself: `event.py` (the update format), `clock.py` (what time it is)
 - `BRIDGES.md` and `handoff/`: how the team splits and hands off work
 
+### See it in the browser
+
+Needs Java 17 or newer for the page. Use three terminals, all in the repo folder:
+
+```
+python sim.py
+python -m parkfind.server --run out/latest --speed 60
+java --source 17 WebPage
+```
+
+Then open http://localhost:8085. The server replays the simulated morning from 06:30 lot time,
+one simulated minute per real second; the page asks it for fresh status every five seconds.
+To freeze the morning at one moment instead, start the server with
+`--now 2026-09-21T08:15:00-04:00 --speed 0`.
+
+Click a P pin to open that lot: stalls show free, taken or unknown with their age, and lots
+that only count cars (an hourly count, a gate) show their last count and how old it is.
+
 ---
 
 ## Features

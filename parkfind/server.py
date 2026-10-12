@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from parkfind.clock import make_clock
-from parkfind.lastseen import read_feed, status
+from parkfind.lastseen import load_layout, read_feed, status
 
 
 def build_view(run, layout, clock, vehicle_class, driver_id):
@@ -76,6 +76,26 @@ def make_handler(run, layout, clock):
     return ParkFindHandler
 
 
+def first_observed(feed_path: Path) -> str:
+    """
+    why: Give the replay clock a sensible default start: the moment the recording begins.
+    boundary: Reads only the observed_at values in the feed; validates nothing else.
+    ugly: Lines are in time order but an unreadable first line must not stop the server, so all lines are scanned.
+    """
+    earliest = None
+    with feed_path.open(encoding="utf-8") as feed:
+        for line in feed:
+            try:
+                stamp = json.loads(line)["observed_at"]
+            except (ValueError, KeyError, TypeError):
+                continue
+            if earliest is None or stamp < earliest:
+                earliest = stamp
+    if earliest is None:
+        raise SystemExit(f"{feed_path} has no readable reports")
+    return earliest
+
+
 def main():
     """
     why: Start the DI-4 HTTP server using the selected simulation feed.
@@ -84,15 +104,20 @@ def main():
     """
     parser = argparse.ArgumentParser(description="ParkFind SK-VIEW HTTP server")
     parser.add_argument("--run", required=True, type=Path)
-    parser.add_argument("--now", default=None)
+    parser.add_argument("--now", default=None,
+                        help="replay start, e.g. 2026-09-21T08:15:00-04:00 (default: the feed's first report)")
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
 
-    with Path("lot_commuter_north.json").open(encoding="utf-8") as file:
-        layout = json.load(file)
+    # campus.json is found next to the package, so the server starts from any folder.
+    layout = load_layout()
 
-    clock = make_clock(start=args.now, speed=args.speed)
+    # Without --now, replay from the feed's first report. The wall clock would make a
+    # recorded morning look hours or days old, so every stall would read unknown.
+    start = args.now or first_observed(args.run / "feed.jsonl")
+    clock = make_clock(start=start, speed=args.speed)
+    print(f"Replay starts at {start}, speed {args.speed}", flush=True)
     handler = make_handler(args.run, layout, clock)
 
     server = ThreadingHTTPServer(("localhost", args.port), handler)

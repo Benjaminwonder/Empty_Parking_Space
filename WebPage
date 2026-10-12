@@ -43,11 +43,14 @@ public class WebPage {
     static class Layout {
         String lotId;
         List<Stall> stalls = new ArrayList<>();
+        // lot_id -> display name, in campus.json order (each lot becomes one pin on the map)
+        Map<String, String> lotNames = new LinkedHashMap<>();
     }
 
     public static void main(String[] args) throws Exception {
 
-        Layout layout = loadLayout("lot_commuter_north.json");
+        // campus.json: the nine lots everyone reads (BD-1). Edited by BD at the lead's request, 2026-10-12.
+        Layout layout = loadLayout("campus.json");
 
         String page = buildPage(layout);
 
@@ -61,7 +64,7 @@ public class WebPage {
         long evCount = layout.stalls.stream().filter(s -> s.ev).count();
 
         System.out.println("ParkFind WebPage running at http://localhost:" + myPort);
-        System.out.println("Layout: " + layout.lotId);
+        System.out.println("Layout: " + layout.lotId + " (" + layout.lotNames.size() + " lots)");
         System.out.println("Stalls loaded: " + layout.stalls.size()
                 + " (ADA " + adaCount + ", EV " + evCount + ")");
     }
@@ -99,68 +102,60 @@ public class WebPage {
 
         Layout layout = new Layout();
 
-        Matcher lotMatcher = Pattern.compile(
-                "\"lot_id\"\\s*:\\s*\"([^\"]+)\"")
+        Matcher campusMatcher = Pattern.compile(
+                "\"campus_id\"\\s*:\\s*\"([^\"]+)\"")
                 .matcher(json);
 
-        if (lotMatcher.find()) {
-            layout.lotId = lotMatcher.group(1);
+        if (campusMatcher.find()) {
+            layout.lotId = campusMatcher.group(1);
         }
 
-        List<String> adaStalls =
-                getStringArray(json, "ada");
+        // Each lot is one object starting at "lot_id". Cut the text into one chunk per
+        // lot, then read that lot's fields from its own chunk only, so one lot's ADA
+        // list can never be read as another's.
+        Matcher lotStart = Pattern.compile("\"lot_id\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
+        List<int[]> starts = new ArrayList<>();
+        List<String> ids = new ArrayList<>();
+        while (lotStart.find()) {
+            starts.add(new int[] { lotStart.start() });
+            ids.add(lotStart.group(1));
+        }
 
-        List<String> evStalls =
-                getStringArray(json, "ev");
+        for (int i = 0; i < ids.size(); i++) {
 
-        Pattern zonePattern = Pattern.compile(
-                "\\{\\s*" +
-                "\"zone_id\"\\s*:\\s*\"([^\"]+)\"\\s*," +
-                "\\s*\"fill_priority\"\\s*:\\s*([0-9]+)\\s*," +
-                "\\s*\"rows\"\\s*:\\s*\\[([^\\]]+)\\]\\s*," +
-                "\\s*\"stalls_per_row\"\\s*:\\s*([0-9]+)" +
-                "\\s*\\}");
+            int from = starts.get(i)[0];
+            int to = (i + 1 < ids.size()) ? starts.get(i + 1)[0] : json.length();
+            String chunk = json.substring(from, to);
+            String lotId = ids.get(i);
 
-        Matcher zoneMatcher = zonePattern.matcher(json);
+            Matcher name = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]+)\"").matcher(chunk);
+            layout.lotNames.put(lotId, name.find() ? name.group(1) : lotId);
 
-        while (zoneMatcher.find()) {
+            Matcher perRow = Pattern.compile("\"stalls_per_row\"\\s*:\\s*([0-9]+)").matcher(chunk);
+            if (!perRow.find()) {
+                throw new IOException("lot " + lotId + " has no stalls_per_row in " + filename);
+            }
+            int stallsPerRow = Integer.parseInt(perRow.group(1));
 
-            String zone = zoneMatcher.group(1);
-            String rowsText = zoneMatcher.group(3);
-            int stallsPerRow =
-                    Integer.parseInt(zoneMatcher.group(4));
+            List<String> rows = getStringArray(chunk, "rows");
+            List<String> adaStalls = getStringArray(chunk, "ada");
+            List<String> evStalls = getStringArray(chunk, "ev");
 
-            Matcher rowMatcher = Pattern.compile(
-                    "\"([^\"]+)\"")
-                    .matcher(rowsText);
+            for (String row : rows) {
+                for (int number = 1; number <= stallsPerRow; number++) {
 
-            while (rowMatcher.find()) {
-
-                String row = rowMatcher.group(1);
-
-                for (int number = 1;
-                     number <= stallsPerRow;
-                     number++) {
-
-                    String id = String.format(
-                            "%s-%02d",
-                            row,
-                            number);
-
-                    boolean ada =
-                            adaStalls.contains(id);
-
-                    boolean ev =
-                            evStalls.contains(id);
+                    // ids match the simulator and the server exactly: lot:row-NN
+                    String local = String.format("%s-%02d", row, number);
+                    String id = lotId + ":" + local;
 
                     layout.stalls.add(
                             new Stall(
                                     id,
-                                    zone,
-                                    row,
+                                    lotId,
+                                    lotId + ":" + row,
                                     number,
-                                    ada,
-                                    ev));
+                                    adaStalls.contains(local),
+                                    evStalls.contains(local)));
                 }
             }
         }
@@ -168,7 +163,7 @@ public class WebPage {
         if (layout.stalls.isEmpty()) {
             throw new IOException(
                     "No stalls found in " + filename
-                    + " - check the zone keys are in the expected order");
+                    + " - expected campus.json with a lots list");
         }
 
         return layout;
@@ -245,6 +240,7 @@ public class WebPage {
             }
 
             zoneJson.add("{\"id\":\"" + esc(zone.getKey()) + "\","
+                    + "\"name\":\"" + esc(layout.lotNames.getOrDefault(zone.getKey(), zone.getKey())) + "\","
                     + "\"rows\":[" + String.join(",", rowJson) + "]}");
         }
 
@@ -1056,7 +1052,7 @@ ol.steps li {
         <div class="logo">ParkFind</div>
 
         <input id="search" class="search"
-               placeholder="Search a stall (e.g. N1-06)">
+               placeholder="Search a stall (e.g. sage:B-04)">
 
         <div class="updated">
             <span class="dot" id="updatedDot"></span>
@@ -1182,6 +1178,11 @@ function cap(s) {
     return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// a lot's display name from campus.json ("Sage Hall Lot"), falling back to its id
+function lotName(z) {
+    return z.name || (cap(z.id) + " lot");
+}
+
 function dist(a, b) {
     return Math.hypot(b[0] - a[0], b[1] - a[1]);
 }
@@ -1208,7 +1209,8 @@ LAYOUT.zones.forEach(function (zone) {
 
 // grow the canvas to fit the lot if it needs more room than the real photo
 // is wide, instead of risking the entrance marker landing off the edge
-MAP_W = Math.max(MAP_W, Math.ceil(BAND_LEFT + rowWidth + 60));
+// Campus (nine lots): the lot grids are a working space for the pop-up only and are never
+// drawn on the campus picture, so the canvas no longer grows to fit all nine side by side.
 
 let cursorX = BAND_LEFT + LOT_PAD;
 
@@ -1229,6 +1231,7 @@ LAYOUT.zones.forEach(function (zone) {
 
     const z = {
         id: zone.id,
+        name: zone.name,
         rows: zone.rows,
         x: cursorX,
         y: LOT_TOP + LOT_PAD + LOT_HEAD,
@@ -1269,7 +1272,8 @@ LAYOUT.zones.forEach(function (zone) {
     });
 
     zones.push(z);
-    cursorX += width + 2 * LOT_PAD + ZONE_GAP;
+    // Campus: every lot's grid starts at the same spot. Each is only ever shown alone in the
+    // pop-up, so side by side they only made far-right lots look hundreds of metres away.
 });
 
 const svg = document.getElementById("map");
@@ -1365,10 +1369,19 @@ el("line", { x1: GATE_X, y1: 0, x2: GATE_X, y2: MAP_H, stroke: "#ffffff",
 // (see z.x/z.y below) used only by the pop-up window and the close-up,
 // never drawn directly on the campus picture. Clicking a marker opens that
 // same detailed grid in the pop-up, same as before.
+// Campus (nine lots, campus.json): one marker per lot_id, in picture units.
+// PLACEHOLDER positions chosen by BD on open ground so nothing overlaps a building;
+// DK knows the real lot locations on the measured map and should move these.
 const LOT_MARKERS = {
-    near: { x: 178, y: 108, w: 60, h: 50 },
-    mid:  { x: 322, y: 175, w: 55, h: 23 },
-    far:  { x: 320, y: 250, w: 50, h: 30 }
+    rinker:  { x: 205, y: 118, w: 52, h: 32 },
+    sage:    { x: 415, y: 108, w: 60, h: 30 },
+    libn:    { x: 415, y: 170, w: 52, h: 28 },
+    libs:    { x: 52,  y: 615, w: 60, h: 30 },
+    hollis:  { x: 530, y: 130, w: 60, h: 40 },
+    east:    { x: 632, y: 340, w: 52, h: 50 },
+    west1:   { x: 30,  y: 225, w: 60, h: 40 },
+    west2:   { x: 20,  y: 358, w: 55, h: 36 },
+    stetson: { x: 460, y: 570, w: 52, h: 30 }
 };
 
 function markerFor(z) {
@@ -1383,7 +1396,7 @@ zones.forEach(function (z) {
     const mx = m.x * S, my = m.y * S, mw = m.w * S, mh = m.h * S;
 
     const g = el("g", { "class": "lot-shape" }, lotShapeLayer);
-    el("title", {}, g, cap(z.id) + " lot · click to see its spots");
+    el("title", {}, g, lotName(z) + " · click to see its spots");
     el("rect", { x: mx, y: my, width: mw, height: mh, rx: 8, "class": "lot-pave" }, g);
 
     keepClear(mx, my, mw, mh, 6);
@@ -1397,11 +1410,11 @@ zones.forEach(function (z) {
     const px = mx + mw / 2;
     const py = my - 6;
     const pin = el("g", { "class": "pin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
-    el("title", {}, pin, cap(z.id) + " lot · click to see its spots");
+    el("title", {}, pin, lotName(z) + " · click to see its spots");
     el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
                  "class": "lot-pin-body" }, pin);
     el("text", { x: 0, y: -27, "class": "lot-pin-label" }, pin, "P");
-    el("text", { x: 0, y: -12, "class": "lot-pin-label", "font-size": 9 }, pin, cap(z.id));
+    el("text", { x: 0, y: -12, "class": "lot-pin-label", "font-size": 9 }, pin, z.short || cap(z.id));
     pin.addEventListener("click", function (ev) {
         ev.stopPropagation();
         openForLot(z);
@@ -1671,7 +1684,15 @@ function fetchStatus() {
         })
         .then(function (data) {
             stallInfo = data.status.stalls || {};
-            zoneInfo = data.status.zones || {};
+            // each pin's count: status.lots[lot].last_count (hourly zone counts or a gate
+            // count), so a lot whose stalls are all unknown still shows "N / M free" and its age
+            zoneInfo = {};
+            const lots = data.status.lots || {};
+            Object.keys(lots).forEach(function (lotId) {
+                if (lots[lotId].last_count) {
+                    zoneInfo[lotId] = lots[lotId].last_count;
+                }
+            });
             const map = {};
             Object.keys(stallInfo).forEach(function (id) {
                 map[id] = stallInfo[id].state;
@@ -1798,8 +1819,8 @@ function stepsFor(st, pts) {
     steps.push("Head north on N Woodland Blvd for " + meters(pts[0], pts[1]) + " m.");
     steps.push("Turn " + turnWord(north, east) + " onto E Oakdale Ave and go " +
                meters(pts[1], pts[2]) + " m.");
-    steps.push("Turn " + turnWord(east, down) + " into the " + cap(st.zone.id) +
-               " lot entrance and drive " + meters(pts[2], pts[3]) + " m.");
+    steps.push("Turn " + turnWord(east, down) + " into the " + lotName(st.zone) +
+               " entrance and drive " + meters(pts[2], pts[3]) + " m.");
     steps.push("Turn " + turnWord(down, along) + " onto the aisle " + between +
                " and follow it for " + meters(pts[3], pts[4]) + " m.");
 
@@ -1855,7 +1876,7 @@ function drawMapRoute() {
                  "font-weight": "bold" }, e, "P");
     el("text", { x: 30, y: 8, "font-size": 20, "font-weight": "bold", fill: "#0b3d91",
                  stroke: "#ffffff", "stroke-width": 5, "paint-order": "stroke" }, e,
-       cap(st.zone.id) + " lot entrance");
+       lotName(st.zone) + " entrance");
 
     drawCloseup();
 }
@@ -1931,7 +1952,7 @@ function drawCloseup() {
                  "class": route.started ? "" : "route-flow" }, closeSvg);
 
     el("text", { x: GATE_X + 14, y: y0 + 16, "font-size": 11, "font-weight": "bold",
-                 fill: "#14532d" }, closeSvg, "Heading to " + (m ? cap(st.zone.id) + " lot" : "the lot"));
+                 fill: "#14532d" }, closeSvg, "Heading to " + (m ? lotName(st.zone) : "the lot"));
 }
 
 function selectSpot(id) {
@@ -2019,7 +2040,7 @@ function openForLot(z) {
     selectedBuilding = null;
 
     win = {
-        title: cap(z.id) + " lot",
+        title: lotName(z),
         sub: "Pick a spot to preview your route.",
         from: null,
         lots: [{ z: z, rank: -1, meters: 0 }]
@@ -2210,7 +2231,7 @@ function lotCard(item) {
     } else if (item.rank === 1) {
         h("span", "rank r1", "2ND CLOSEST", head);
     }
-    h("span", "lot-name", cap(z.id) + " lot", head);
+    h("span", "lot-name", lotName(z), head);
 
     const stats = lotStats(z);
     const full = stats.total > 0 && stats.free === 0 && stats.unknown === 0;
@@ -2239,8 +2260,9 @@ function lotCard(item) {
     const zClaim = zoneInfo[z.id];
     if (zClaim && zClaim.total_count !== undefined) {
         const age = formatAge(zClaim.age_s);
-        h("div", "lot-sub", "Zone claim: " + zClaim.free_count + " / " + zClaim.total_count +
-                            " free" + (age ? " \u00b7 " + age : ""), box);
+        h("div", "lot-sub", "Last count: " + zClaim.free_count + " / " + zClaim.total_count +
+                            " free" + (age ? " \u00b7 " + age : "") +
+                            (zClaim.state === "expired" ? " (too old to trust)" : ""), box);
     }
 
     const dg = lotDiagram(z, box);
@@ -2340,7 +2362,7 @@ function refreshSelection() {
         h("div", "foot-sub", "Pick a spot to see your route. It flashes blue as a preview.", info);
     } else {
         const st = stalls[route.id];
-        h("div", "foot-main", route.id + " · " + cap(st.zone.id) + " lot · about " +
+        h("div", "foot-main", route.id + " · " + lotName(st.zone) + " · about " +
                               totalMeters(fullPath(st)) + " m", info);
         h("div", "foot-sub", route.started
             ? "Route started (solid blue)."
@@ -2381,7 +2403,7 @@ function showHelp() {
         return;
     }
     clearSide();
-    add("h2", LAYOUT.lot);
+    add("h2", "Stetson campus parking");
 
     if (winOpen) {
         add("div", "Pick a spot in the window. The route flashes blue on the map until " +
@@ -2391,7 +2413,7 @@ function showHelp() {
 
     add("div", "Click a building on the map to see the closest parking lots.", "sub");
     add("div", "The lots aren't shown on the map. They open in a window when you pick " +
-               "a building. You can also type a spot id (like N1-06) in the search box " +
+               "a building or a P pin. You can also type a spot id (like sage:B-04) in the search box " +
                "and press Enter.", "status-note");
 }
 
@@ -2401,7 +2423,7 @@ function showRoute() {
     const pts = fullPath(st);
 
     add("h2", route.id);
-    add("div", cap(st.zone.id) + " lot · row " + st.row + " · spot " + st.n, "sub");
+    add("div", lotName(st.zone) + " · row " + st.row.split(":").pop() + " · spot " + st.n, "sub");
 
     const badges = add("div");
     const b1 = h("span", "badge" + (st.type === "ADA" ? " ada" : (st.type === "EV" ? " ev" : "")),
@@ -2475,9 +2497,11 @@ searchBox.addEventListener("input", function () {
 searchBox.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter") {
         const wanted = searchBox.value.trim().toUpperCase();
-        if (stalls[wanted]) {
+        // ids are lower-case lot names (sage:B-04), so match without caring about case
+        const hit = Object.keys(stalls).find(function (id) { return id.toUpperCase() === wanted; });
+        if (hit) {
             query = "";
-            openForStall(wanted);
+            openForStall(hit);
         }
     }
 });

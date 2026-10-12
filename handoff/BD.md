@@ -62,3 +62,15 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
           Pillow and NumPy are allowed in vision.py only; nothing in parkfind/ uses them, so DI and DK install nothing.
   → DI: nothing changes for read_feed; camera events look exactly like simulator events.
   → DK: nothing yet. One of the nine lots will become a real-photo lot once its camera file exists.
+
+2026-10-12 · campus linked end to end · edited DI and DK files at the lead's request
+  Why: DI-2..DI-4 and DK-2/DK-3 were built on lot_commuter_north.json; the campus change would have shown every stall unknown.
+  landed (BD lane): gate counter now reports the lot's running count (free_count/total_count) every 5 min and on every car;
+          15-minute snapshots last 24m instead of 8m, so those lots no longer go unknown between polls.
+  landed (DI files, by BD): lastseen.py reads campus.json (load_layout, layout_stalls), ids lot:row-NN,
+          status adds lots summary + lot_claims; server.py finds campus.json itself and, without --now, replays from the feed's first report.
+  landed (DK file, by BD): WebPage reads campus.json; each of the nine lots is a P pin (positions are PLACEHOLDERS, please move them
+          to the real lots); lot names from campus.json; "Last count" from status.lots; search accepts sage:B-04 in any case.
+  checked: sim → server (--speed 60 and frozen 08:15) → page in a headless browser; 200 stalls, no page errors, counts match truth.json.
+  → DI: please review your two files; the shapes are in CONTRACT SK-STATUS. read_feed is unchanged.
+  → DK: please review WebPage, move the nine LOT_MARKERS to the real lot positions, and check the pop-up distances (they are within-lot only now).
