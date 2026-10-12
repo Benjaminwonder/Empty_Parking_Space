@@ -1,4 +1,5 @@
-# box: T1–T2 · lane: DI · read BRIDGES.md before editing
+
+# box: T1–T3 · lane: DI · read BRIDGES.md before editing
 
 """
 Read occupancy events from the ParkFind feed and build the latest known
@@ -6,13 +7,19 @@ parking state.
 
 This file belongs to the trunk/backend. It may read the canonical event feed,
 but it must never read simulator truth.
+
+DI-1: Read and validate occupancy events.
+DI-2: Build freshness-aware stall, zone, and lot status.
+DI-3: Generate status.json using the shared replay clock.
 """
 
+import argparse
 import json
 from pathlib import Path
 from datetime import datetime
 
 from parkfind.event import OccupancyEvent, EventShapeError
+from parkfind.clock import make_clock, parse_utc
 
 
 def read_feed(path: str | Path, now: datetime) -> tuple[list[OccupancyEvent], int]:
@@ -46,6 +53,7 @@ def read_feed(path: str | Path, now: datetime) -> tuple[list[OccupancyEvent], in
             events.append(event)
 
     return events, rejected_lines
+
 
 def _claim_status(event: OccupancyEvent, now: datetime) -> dict:
     """
@@ -124,8 +132,6 @@ def status(events: list[OccupancyEvent], layout: dict, now: datetime) -> dict:
 
     # The layout, not the feed, defines which stalls exist.
     for zone in layout["zones"]:
-        zone_id = zone["zone_id"]
-
         for row_id in zone["rows"]:
             for number in range(1, zone["stalls_per_row"] + 1):
                 stall_id = f"{row_id}-{number:02d}"
@@ -162,3 +168,74 @@ def status(events: list[OccupancyEvent], layout: dict, now: datetime) -> dict:
         "zones": zones,
         "lot": lot,
     }
+
+
+def main() -> None:
+    """
+    why: Generate a reproducible SK-STATUS JSON snapshot from an occupancy feed.
+
+    boundary: Reads SK-FEED and SK-LAYOUT using SK-CLOCK. Writes only the
+    status.json output. Never reads simulator truth or changes event shapes.
+
+    ugly: Invalid feed lines are counted rather than repaired. Future events
+    are skipped so replay snapshots never contain observations from later.
+    """
+    parser = argparse.ArgumentParser(
+        description="Generate the latest known ParkFind parking status."
+    )
+
+    parser.add_argument(
+        "--run",
+        required=True,
+        help="Run directory containing feed.jsonl"
+    )
+
+    parser.add_argument(
+        "--now",
+        default=None,
+        help="Replay start time in ISO 8601 format with timezone"
+    )
+
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Replay clock speed; 0 freezes time"
+    )
+
+    args = parser.parse_args()
+
+    run_dir = Path(args.run)
+
+    layout_path = (
+        Path(__file__).resolve().parent.parent
+        / "lot_commuter_north.json"
+    )
+
+    with layout_path.open("r", encoding="utf-8") as file:
+        layout = json.load(file)
+
+    clock = make_clock(start=args.now, speed=args.speed)
+    now = clock()
+
+    events, rejected_lines = read_feed(
+        run_dir / "feed.jsonl",
+        now
+    )
+
+    snapshot = status(events, layout, now)
+    snapshot["rejected_lines"] = rejected_lines
+
+    output_path = run_dir / "status.json"
+
+    with output_path.open("w", encoding="utf-8") as file:
+        json.dump(snapshot, file, indent=2)
+        file.write("\n")
+
+    print(f"Status written to {output_path}")
+    print(f"Total stalls: {len(snapshot['stalls'])}")
+    print(f"Rejected lines: {rejected_lines}")
+
+
+if __name__ == "__main__":
+    main()
