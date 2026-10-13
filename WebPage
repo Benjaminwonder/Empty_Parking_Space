@@ -1134,6 +1134,38 @@ ol.steps li {
 .stall.s-held .stall-rect { fill: #ddd6fe; stroke: #7c3aed; stroke-width: 2; }
 .stall.s-mine .stall-rect { fill: #1a73e8; stroke: #0b3d91; stroke-width: 3; }
 .stall.s-mine .stall-num, .stall.s-mine .stall-icon { fill: #ffffff; }
+/* the trip card: under "Live · updated", border colour = state (blue held, amber waiting, green parked, grey not held) */
+.trip-card { border: 2px solid #1a73e8; background: #ffffff; }
+.trip-card.hidden { display: none; }
+.trip-card.trip-waiting, .trip-card.trip-car_seen { border-color: #d97706; }
+.trip-card.trip-arrived { border-color: #1b8a3a; }
+.trip-card.trip-way { border-color: #9aa0a6; }
+.trip-where { font-size: 12px; color: #5f6368; }
+.trip-state { font-size: 17px; font-weight: bold; margin: 2px 0; color: #1a73e8; }
+.trip-waiting .trip-state, .trip-car_seen .trip-state { color: #b45309; }
+.trip-arrived .trip-state { color: #1b8a3a; }
+.trip-way .trip-state { color: #3c4043; }
+.trip-sub { font-size: 13px; color: #3c4043; }
+.trip-live { font-size: 12px; color: #5f6368; margin-top: 6px; }
+.trip-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.trip-actions .btn { margin: 0; }
+.btn.go { background: #1b8a3a; border-color: #1b8a3a; color: #ffffff; font-weight: bold; }
+.btn.go:hover { background: #157031; }
+.btn.go:disabled { background: #a7d3b4; border-color: #a7d3b4; cursor: default; }
+.btn.danger { background: #ffffff; border-color: #f1b5b1; color: #c5221f; }
+.btn.danger:hover { background: #fce8e6; }
+.btn.way { background: #ffffff; border-color: #1a73e8; color: #1a73e8; font-weight: bold; }
+.btn.way:hover { background: #e8f0fe; }
+.btn.quiet { background: #f1f3f4; border-color: #dadce0; color: #3c4043; }
+.btn.quiet:hover { background: #e8eaed; }
+.foot-actions { display: flex; gap: 8px; flex-wrap: nowrap; margin-left: auto; }
+.win-foot .foot-actions .btn { margin: 0; white-space: nowrap; }
+.report-box { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: #f8faf9; border: 1px dashed #c7ccd3;
+              font-size: 13px; }
+.report-line { margin-top: 4px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.report-line input { width: 52px; }
+.report-line .btn { margin: 0; padding: 5px 12px; }
+.report-seen { font-size: 12px; color: #5f6368; margin-top: 4px; }
 .claim-box { margin: 12px 0; padding: 12px; border-radius: 10px; background: #eef4fe;
              border: 1px solid #c9dafc; font-size: 14px; }
 .claim-box b { font-size: 16px; }
@@ -1304,6 +1336,7 @@ body.show-buildings .bpin { display: inline; }
 
     <!-- the right-hand column takes whatever width the fitted map leaves -->
     <div class="side-col">
+        <div class="side trip-card hidden" id="tripCard"></div>
         <div class="bkey hidden" id="bkey">
             <div class="bkey-head">
                 <div class="bkey-title">Buildings</div>
@@ -2184,6 +2217,11 @@ function fetchStatus() {
             });
             myClaim = data.my_claim || null;
             noticeRelease(data.last_release);
+            if (myClaim !== null && myClaim.phase === "arrived" && route !== null && route.id === myClaim.stall_id) {
+                route = null;          // parked: no more directions to draw; the card keeps the spot
+                drawMapRoute();
+                showHelp();
+            }
             lastAsOf = data.as_of;
             liveOk = true;
             renderTopBar();
@@ -2191,6 +2229,7 @@ function fetchStatus() {
             setStatus(map);
             updateLotPins();
             renderMeCard();        // nearest lot with room can change with every update
+            renderTripCard();
             maybeOpenNearest();
         })
         .catch(function () {
@@ -2512,6 +2551,7 @@ function claimSpot(id) {
 // ugly: if the release request fails, the claim still times out on the server by its own rules.
 function releaseSpot() {
     myClaim = null;
+    renderTripCard();
     if (winOpen) {
         closeWindow();
     }
@@ -2696,9 +2736,13 @@ function buildNet() {
     NET = { nodes: nodes, edges: edges };
 }
 
-// the nearest point on any road to a point, or to a lot's rectangle (then: the lot's driveway)
-function snapToRoad(u, v, rect) {
-    let best = null;
+// why: where you could join the road network (or leave it for the lot): every road close enough to matter.
+// boundary: projections onto ROAD_LINES only; for a lot, the distance is to the lot's outline.
+// ugly: the nearest road is not always the best one to join: from 30 m off University and 40 m off Amelia,
+//       going via Amelia can be far shorter. So every road within `slack` of the nearest is offered to
+//       Dijkstra, with its off-road metres as the cost of using it, and Dijkstra picks.
+function snapCandidates(u, v, rect, slack) {
+    const all = [];
     ROAD_LINES.forEach(function (r, i) {
         const tu = rect ? rect.x + rect.w / 2 : u, tv = rect ? rect.y + rect.h / 2 : v;
         const t = Math.max(r.a, Math.min(r.b, r.v ? tv : tu));
@@ -2711,15 +2755,17 @@ function snapToRoad(u, v, rect) {
         } else {
             d = Math.hypot(pu - u, pv - v);
         }
-        if (best === null || d < best.d - 1e-6) {
-            best = { u: pu, v: pv, road: i, d: d };
-        }
+        all.push({ u: pu, v: pv, road: i, d: d });
     });
-    return best;
+    const nearest = Math.min.apply(null, all.map(function (c) { return c.d; }));
+    return all.filter(function (c) { return c.d <= nearest + slack; });
 }
 
-// Dijkstra over the network plus two temporary nodes (start and end, each spliced into its road)
-function shortestDrive(start, end) {
+// why: the shortest drive from any of the start candidates to any of the end candidates, in one Dijkstra.
+// boundary: the road network plus temporary nodes spliced into their roads; each start costs its off-road
+//           metres to reach, each end its off-road metres to leave (a hidden sink node joins the ends).
+// ugly: returns which start and end won too, so the trip draws the off-road legs to the right roads.
+function shortestDrive(starts, ends) {
     if (NET === null) {
         buildNet();
     }
@@ -2752,10 +2798,14 @@ function shortestDrive(start, end) {
         });
         return id;
     };
-    const s = splice(start), t = splice(end);
+    const s = starts.map(splice), t = ends.map(splice);
+    const sink = nodes.length;
+    nodes.push({ u: 0, v: 0 });
+    edges.push([]);
+    t.forEach(function (n, k) { edges[n].push({ to: sink, len: ends[k].d, road: null }); });
     const dist = nodes.map(function () { return Infinity; }), prev = nodes.map(function () { return null; });
     const done = nodes.map(function () { return false; });
-    dist[s] = 0;
+    s.forEach(function (n, k) { dist[n] = Math.min(dist[n], starts[k].d); });
     for (;;) {
         let u = -1;
         for (let n = 0; n < nodes.length; n++) {
@@ -2763,7 +2813,7 @@ function shortestDrive(start, end) {
                 u = n;
             }
         }
-        if (u === -1 || u === t) {
+        if (u === -1 || u === sink) {
             break;
         }
         done[u] = true;
@@ -2774,17 +2824,20 @@ function shortestDrive(start, end) {
             }
         });
     }
-    if (dist[t] === Infinity) {
+    if (dist[sink] === Infinity) {
         return null;
     }
+    const last = prev[sink].from;
     const path = [];
-    for (let n = t; n !== null; n = prev[n] ? prev[n].from : null) {
+    let first = last;
+    for (let n = last; n !== null; n = prev[n] ? prev[n].from : null) {
         path.unshift({ u: nodes[n].u, v: nodes[n].v, road: prev[n] ? prev[n].road : null });
+        first = n;
     }
-    return path;
+    return { path: path, start: starts[s.indexOf(first)], end: ends[t.indexOf(last)], metres: dist[sink] * M_PER_UNIT };
 }
 
-// The whole trip to a lot, in picture units: start, onto the nearest road, along roads, into the lot.
+// The whole trip to a lot, in picture units: start, onto the best road, along roads, into the lot.
 // Each point carries the road taken to reach it (null for the off-road ends).
 function tripTo(z) {
     const m = markerFor(z);
@@ -2792,17 +2845,18 @@ function tripTo(z) {
         return null;
     }
     const o = origin();
-    const from = snapToRoad(o.u, o.v, null);
-    const to = snapToRoad(0, 0, { x: m.x, y: m.y, w: m.w, h: m.h });
-    const drive = shortestDrive(from, to);
+    const rect = { x: m.x, y: m.y, w: m.w, h: m.h };
+    // 45 units (about 80 m) of choice at the start; at the lot only roads that really touch it (about 10 m)
+    const drive = shortestDrive(snapCandidates(o.u, o.v, null, 45), snapCandidates(0, 0, rect, 6));
     if (drive === null) {
         return null;
     }
+    const from = drive.start, to = drive.end;
     const pts = [];
     if (Math.hypot(from.u - o.u, from.v - o.v) > 1) {
         pts.push({ u: o.u, v: o.v, road: null });
     }
-    drive.forEach(function (p) { pts.push(p); });
+    drive.path.forEach(function (p) { pts.push(p); });
     // into the lot: the nearest point of the lot's outline to its driveway
     const entry = { u: Math.max(m.x, Math.min(m.x + m.w, to.u)), v: Math.max(m.y, Math.min(m.y + m.h, to.v)), road: null };
     if (Math.hypot(entry.u - to.u, entry.v - to.v) > 0.5) {
@@ -3738,6 +3792,7 @@ function lotCard(item) {
             ? "Counted row by row every hour. Spots aren't watched one by one, so any spot in a row with room may be free."
             : "Counted at the gate as cars come and go. Spots aren't watched one by one.", box);
         renderAnswer(answers[z.id], box);
+        reportForm(z, box);
         const dgc = lotDiagram(z, box);
         card.svg = dgc.svg;
         card.nodes = dgc.nodes;
@@ -3755,6 +3810,7 @@ function lotCard(item) {
     });
 
     renderAnswer(answers[z.id], box);
+    reportForm(z, box);
 
     const dg = lotDiagram(z, box);
     card.svg = dg.svg;
@@ -3830,13 +3886,15 @@ function refreshSelection() {
         s.appendChild(document.createTextNode(l[0]));
     });
 
-    const cancel = h("button", "btn", "Cancel", winFoot);
+    // the actions as one group that never wraps apart: grey leaves, blue outline shows the way, green takes the spot
+    const acts = h("div", "foot-actions", undefined, winFoot);
+    const cancel = h("button", "btn quiet", "Cancel", acts);
     cancel.addEventListener("click", closeWindow);
 
     if (route !== null && myClaim !== null && myClaim.stall_id === route.id) {
-        const rel = h("button", "btn", "Release spot", winFoot);
+        const rel = h("button", "btn danger", "Release spot", acts);
         rel.addEventListener("click", releaseSpot);
-        const go = h("button", "btn primary", route.started ? "Route started" : "Start route", winFoot);
+        const go = h("button", "btn primary", route.started ? "Route started" : "Start route", acts);
         go.disabled = route.started;
         go.addEventListener("click", startRoute);
     } else {
@@ -3845,11 +3903,11 @@ function refreshSelection() {
         // the way there is still offered, as a plain button, because a route promises nothing.
         const ok = route !== null && claimable(route.id);
         if (route !== null && !ok) {
-            const way = h("button", "btn", route.started ? "Route started" : "Just show the way", winFoot);
+            const way = h("button", "btn way", route.started ? "Route started" : "Just show the way", acts);
             way.disabled = route.started;
             way.addEventListener("click", startRoute);
         }
-        const claimBtn = h("button", "btn primary", "Claim this spot", winFoot);
+        const claimBtn = h("button", "btn go", "Claim this spot", acts);
         claimBtn.disabled = !ok;
         claimBtn.title = ok ? "Hold this spot for you" : (route === null ? "Pick a spot first"
                        : (!typeAllowed(route.id) ? "This is an " + stalls[route.id].type +
@@ -4116,6 +4174,7 @@ function showHelp() {
         showRoute();
         return;
     }
+    renderTripCard();
     clearSide();
     add("h2", "Stetson campus parking");
 
@@ -4152,31 +4211,182 @@ function showRoute() {
         h("li", undefined, text, ol);
     });
 
-    if (myClaim !== null && myClaim.stall_id === route.id) {
-        const box = add("div", undefined, "claim-box");
-        if (myClaim.phase === "arrived" || myClaim.phase === "car_seen") {   // car_seen: slice BD-18 asks whose
-            h("b", undefined, "Car detected in your spot", box);
-            h("div", undefined, "It stays yours until the sensor sees it empty again.", box);
+    add("div", "Your spot's status and buttons are in the card at the top of this column.", "status-note");
+    renderTripCard();
+}
+
+// ---------- the trip card: your spot, at the top of the right column ----------
+// why: the things a driver acts on mid-trip (is it still mine? I've parked, release, end) belong where the
+//      eye already goes, right under "Live · updated", not at the bottom of the directions.
+// boundary: reads myClaim and route; buttons call the server (claims) or the route functions; draws only #tripCard.
+// ugly: a camera cannot tell whose car it saw: "car_seen" asks the driver (slice BD-19 answers it from location).
+// open one lot's window without drawing a route (after parking, or when the spot was taken)
+function openLotOf(id, sub) {
+    win = { title: lotName(stalls[id].zone), sub: sub, from: null, lots: [{ z: stalls[id].zone, rank: -1 }] };
+    openWindow();
+}
+
+function postClaim(path, then) {
+    fetch(SK_VIEW_URL.replace("/view", path) + (path.indexOf("?") < 0 ? "?" : "&") + "driver_id=" +
+          encodeURIComponent(DRIVER_ID), { method: "POST" })
+        .then(function (r) { return r.json().then(function (body) { return { ok: r.ok, body: body }; }); })
+        .then(function (res) {
+            if (then) {
+                then(res);
+            }
+            fetchStatus();
+        })
+        .catch(function () {
+            showToast("Couldn't reach ParkFind", "Nothing was changed. Check the connection and try again.");
+        });
+}
+
+function saidParked() {
+    postClaim("/parked", function (res) {
+        if (res.ok) {
+            myClaim = res.body.my_claim;
+            showToast(res.body.result === "not_seen" ? "Waiting for the camera" : "You're parked", res.body.message);
+            renderTripCard();
         } else {
-            h("b", undefined, "Held for you until " + campusClock(myClaim.deadline), box);
-            h("div", undefined, "If no car reaches it by then, it goes back to other drivers.", box);
+            showToast("Couldn't record that", res.body.message || "Try again.");
         }
-        const rel = h("button", "btn", "Release spot", box);
-        rel.addEventListener("click", releaseSpot);
+    });
+}
+
+function notMyCar() {
+    const spot = myClaim ? myClaim.stall_id : null;
+    postClaim("/taken", function () {
+        myClaim = null;
+        showToast("Someone took your spot", "Sorry: another car parked there first. Pick another spot in the lot.");
+        if (spot !== null) {
+            route = null;
+            drawMapRoute();
+            openLotOf(spot, "Your spot was taken. Pick another one here.");
+        }
+        renderTripCard();
+    });
+}
+
+function renderTripCard() {
+    const tripCard = document.getElementById("tripCard");   // looked up here: this can run before the script ends
+    while (tripCard.firstChild) {
+        tripCard.removeChild(tripCard.firstChild);
+    }
+    const id = myClaim !== null ? myClaim.stall_id : (route !== null && route.started ? route.id : null);
+    tripCard.className = "side trip-card";
+    if (id === null) {
+        tripCard.classList.add("hidden");
+        return;
+    }
+    const phase = myClaim === null ? "way" : (myClaim.phase === "held" && myClaim.said_parked ? "waiting" : myClaim.phase);
+    tripCard.classList.add("trip-" + phase);
+    const short = spotName(id);
+    const words = {
+        held: ["Held for you until " + (myClaim ? campusClock(myClaim.deadline) : ""),
+               "If no car reaches it by then, it goes back to other drivers."],
+        waiting: ["Waiting for the camera",
+                  "You said you've parked. We confirm when the camera sees your car (held until " +
+                  (myClaim ? campusClock(myClaim.deadline) : "") + ")."],
+        car_seen: ["A car just parked in " + short, "Was that you?"],
+        arrived: ["Parked: " + short, "It stays yours until the sensor sees it empty."],
+        way: ["Showing the way (not held)", "Anyone can still take this spot. Claim it from the lot to hold it."]
+    }[phase];
+    h("div", "trip-where", lotName(stalls[id].zone) + " · " + short, tripCard);
+    h("div", "trip-state", words[0], tripCard);
+    h("div", "trip-sub", words[1], tripCard);
+
+    const info = stallInfo[id];
+    if (info) {
+        // what the sensor itself last saw, never our own hold laid over it
+        const seen = myClaim !== null ? info.last_claim : info.state;
+        const who = info.source === "driver.report" ? "Driver report" : (String(info.source || "").indexOf("camera.") === 0 ||
+                    info.cadence_class === "continuous" || info.cadence_class === "near_live" ? "Camera" : "Sensor");
+        h("div", "trip-live", who + " last saw it " + String(seen || "unknown").replace("_", " ") +
+                              (info.age_s !== null && info.age_s !== undefined ? ", " + formatAge(info.age_s) : ""), tripCard);
     }
 
-    const age = stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
-    const mineNow = myClaim !== null && myClaim.stall_id === route.id;
-    // "reserved" is our own hold laid over the sensor; say what the camera itself last saw
-    const seenState = mineNow && stallInfo[route.id] ? stallInfo[route.id].last_claim : statusOf(route.id);
-    add("div", "Live status: " + String(seenState).replace("_", " ") + (age ? " (" + age + ")" : "") +
-               ". This shows the way to the spot, it doesn't promise the spot is free.", "status-note");
+    const row = h("div", "trip-actions", undefined, tripCard);
+    const btn = function (text, cls, fn) {
+        const b = h("button", "btn " + cls, text, row);
+        b.addEventListener("click", fn);
+        return b;
+    };
+    if (phase === "held") {
+        btn("I've parked", "go", saidParked);
+    }
+    if (phase === "car_seen") {
+        btn("Yes, I parked", "go", saidParked);
+        btn("No, not me", "danger", notMyCar);
+    }
+    if (myClaim !== null && phase !== "car_seen") {
+        btn(phase === "arrived" ? "I've left" : "Release spot", "danger", releaseSpot);
+    }
+    if (myClaim === null) {
+        const claimNow = btn("Claim this spot", "go", function () { claimSpot(id); });
+        claimNow.disabled = !claimable(id);
+    }
+    const row2 = h("div", "trip-actions", undefined, tripCard);
+    const show = h("button", "btn quiet", "Show lot", row2);
+    show.addEventListener("click", function () {
+        if (route !== null) {
+            openForRoute();
+        } else {
+            openLotOf(id, phase === "arrived" ? "You're parked here." : "Your spot in this lot.");
+        }
+    });
+    if (route !== null) {
+        const end = h("button", "btn quiet", "End route", row2);
+        end.addEventListener("click", endRoute);
+    }
+}
 
-    const show = add("button", "Show lot", "btn");
-    show.addEventListener("click", openForRoute);
-
-    const end = add("button", "End route", "btn");
-    end.addEventListener("click", endRoute);
+// why: in lots no live camera fully watches, drivers on the spot know more than our sensors; let them say so.
+// boundary: POST /report for one row; the server refuses rows a live camera watches (SK-REPORT).
+// ugly: a report is a rough count and goes stale in 10 minutes; it never names a spot (D4).
+function reportForm(z, parent) {
+    const rows = z.rows.filter(function (r) {
+        return !r.stalls.some(function (s) {
+            const id = s.id;
+            const i = stallInfo[id];
+            return i && i.state !== "unknown" && (i.cadence_class === "continuous" || i.cadence_class === "near_live");
+        });
+    });
+    if (rows.length === 0) {
+        return;
+    }
+    const box = h("div", "report-box", undefined, parent);
+    h("b", undefined, "Here now? Help other drivers", box);
+    const line = h("div", "report-line", undefined, box);
+    line.appendChild(document.createTextNode("Row "));
+    const sel = h("select", undefined, undefined, line);
+    rows.forEach(function (r) {
+        const o = h("option", undefined, r.id.split(":").pop(), sel);
+        o.value = r.id;
+    });
+    line.appendChild(document.createTextNode(" has about "));
+    const num = h("input", undefined, undefined, line);
+    num.type = "number";
+    num.min = "0";
+    num.max = "40";
+    num.value = "0";
+    line.appendChild(document.createTextNode(" free spots "));
+    const send = h("button", "btn way", "Send", line);
+    send.addEventListener("click", function () {
+        postClaim("/report?zone_id=" + encodeURIComponent(sel.value) + "&free_count=" + encodeURIComponent(num.value),
+                  function (res) {
+                      showToast(res.ok ? "Thanks" : "Couldn't send that",
+                                res.ok ? "Other drivers now see your count for " + "row " + sel.value.split(":").pop() +
+                                         " for the next 10 minutes." : (res.body.message || "Try again."));
+                  });
+    });
+    // what drivers have already said here
+    rows.forEach(function (r) {
+        const c = rowInfo[r.id];
+        if (c && c.source === "driver.report" && c.state !== "unknown") {
+            h("div", "report-seen", "Row " + r.id.split(":").pop() + ": a driver saw about " + c.free_count +
+                                    " free, " + formatAge(c.age_s), box);
+        }
+    });
 }
 
 let filter = "All";

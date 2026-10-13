@@ -130,6 +130,14 @@ count, a gate) show their counts row by row with their age. Press **Claim this s
 else is sent there; if no car reaches it within 8 minutes (13 or 23 for slower cameras), it is
 released and you are told. Search takes buildings, lots or spots: `CUB`, `Lot 41`, `Sage B-04`.
 
+Your spot lives in a card at the top of the right column, under "Live · updated": held until
+when, what the camera last saw, and the buttons. When the camera sees a car in your spot it asks
+"Was that you?" (Yes, I parked / No, not me: then the lot opens on the next best spot). "I've
+parked" is checked against the camera, which wins; on slow-sensor lots your word counts until the
+sensor checks. Once you are parked the route leaves the map. In lots no live camera fully
+watches, "Here now? Help other drivers" lets you report roughly how many spots a row has free
+(counted for 10 minutes, never a promised spot).
+
 With your permission the page uses your location: a blue dot shows where you are, routes start
 from you, and the nearest lot with room opens by itself once. Off campus or refused, everything
 starts at the Main Gate instead. Location never leaves the page. Browsers only share location

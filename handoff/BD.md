@@ -367,3 +367,21 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
            ADA taken off for a regular car), refused on a camera row, gone after 10 min; old claim tests 12/12.
   → DI: server.py has /parked, /taken, /report and current_status(…, reports). Please review; tests welcome.
   → DK: SK-CLAIM phases and SK-REPORT in CONTRACT; BD-18 adds the buttons to the page.
+
+2026-10-13 · BD-18: the page side of arrival; trip card; routes pick the best road to join (DK file, by BD)
+  landed (WebPage): trip card at the top of the right column (under "Live · updated"): spot, state (held / waiting
+          for the camera / car seen: "Was that you?" / parked / showing the way), what the sensor last saw, and
+          buttons: I've parked (green), Release / I've left (red outline), Yes, I parked / No, not me, Show lot,
+          End route (grey). Parked -> the route leaves the map, the card stays. No, not me -> POST /taken, toast,
+          the lot opens on the next best spot. Window footer: one non-wrapping group, Cancel grey, Just show the
+          way blue outline, Claim green. "Here now? Help other drivers" row report in lots without full live
+          cameras (POST /report) and drivers' reports shown there. showRoute keeps only the directions.
+  fixed (routing): both maps attached you to the single nearest road before Dijkstra, so from 30 m off one road
+          and 40 m off another it could take the long way. Now every road within ~80 m of you (and every road
+          touching the lot) is a Dijkstra start (end), costed by its off-road metres. 40 random starts x 9 lots:
+          0 longer, 199 of 360 shorter (up to 108 m), 0 legs off a road, 0 failures.
+  checked (browser, 30x, recorded day): held -> car arrives 11:08 -> "Was that you?" -> Yes -> "Confirmed: the
+          camera sees your car at A-05" -> parked, route off the map -> I've left; A-06 -> No, not me -> lot opens on
+          A-08; LBC "I've parked" recorded from the driver; Edmunds report sent and shown; way-only card; card
+          placement at 1600 and 1366; footer on one row; no page errors. score_day PASS.
+  next: BD-19 answers "Was that you?" from location (far away -> taken, auto-claim the next spot, Undo).
