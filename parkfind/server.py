@@ -13,14 +13,15 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from parkfind.clock import make_clock
+from parkfind import guidance
 from parkfind.lastseen import load_layout, read_feed, status
 
 
-def build_view(run, layout, clock, vehicle_class, driver_id):
+def build_view(run, layout, clock, vehicle_class, driver_id, lot_id=None):
     """
     why: Build the current SK-VIEW response for a frontend request.
     boundary: Reads validated sensor events and SK-LAYOUT, never simulator truth.
-    ugly: Guidance may not exist yet, so answer remains null until BD-8 lands.
+    ugly: answer is null until the page names a lot (nearest to the driver, or a clicked pin).
     """
     now = clock()
     events, rejected_lines = read_feed(run / "feed.jsonl", now)
@@ -28,9 +29,7 @@ def build_view(run, layout, clock, vehicle_class, driver_id):
     current_status = status(events, layout, now)
     current_status["rejected_lines"] = rejected_lines
 
-    answer = None
-
-    # BD owns guidance.py. Integrate it when its SK-ANSWER contract lands.
+    answer = guidance.answer(current_status, layout, now, vehicle_class, driver_id, lot_id)
 
     return {
         "as_of": current_status["as_of"],
@@ -43,7 +42,7 @@ def make_handler(run, layout, clock):
     """
     why: Bind the selected feed, layout and clock to each HTTP request.
     boundary: Exposes only SK-VIEW through GET /view.
-    ugly: Browser requests may include query parameters before guidance exists.
+    ugly: a bad vehicle_class or lot_id is a 400, never a guess at what was meant.
     """
 
     class ParkFindHandler(BaseHTTPRequestHandler):
@@ -62,8 +61,13 @@ def make_handler(run, layout, clock):
             params = parse_qs(request.query)
             vehicle_class = params.get("vehicle_class", ["regular"])[0]
             driver_id = params.get("driver_id", [""])[0]
+            lot_id = params.get("lot_id", [None])[0]
 
-            view = build_view(run, layout, clock, vehicle_class, driver_id)
+            try:
+                view = build_view(run, layout, clock, vehicle_class, driver_id, lot_id)
+            except ValueError as problem:  # unknown vehicle_class or lot_id: the caller's mistake, not ours
+                self.send_error(400, str(problem))
+                return
             payload = json.dumps(view).encode("utf-8")
 
             self.send_response(200)
