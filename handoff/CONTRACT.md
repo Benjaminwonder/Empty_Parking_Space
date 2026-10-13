@@ -14,11 +14,13 @@ Weeks: W1, W2, W3. Lanes: BD, DI, DK. Read BRIDGES.md first.
 | SK-FEED | out/<run>/feed.jsonl | One SK-EVENT as JSON per line, in observed_at order, stamped in UTC (Z). Every event carries lot_id. Live cameras report changes at once and every stall once a minute (ttl 90s). Zone claims carry free_count/total_count; gate claims carry no stall id. | BD-4 | DI-1 | W1 |
 | SK-TRUTH | out/<run>/truth.json | {campus_id, tick_s, utc_offset, ticks: [{t, lots: {lot_id: {free, total, stalls: {id: state}, zones: {id: {free, occupied, total}}}}}]}. Tests only. | BD-4 | DI-5 · DI-6 | W1 |
 | SK-STATUS | lastseen.status(events, layout, now); file form out/<run>/status.json | {as_of, rejected_lines, stalls: {lot:row-NN: {state, last_claim, observed_at, age_s, ttl_s, source, cadence_class, confidence}}, zones: {lot:row: claim + free_count/total_count}, lot_claims: {lot_id: claim + free_count/total_count}, lots: {lot_id: {name, total, free, occupied, unknown, last_count: {free_count, total_count, observed_at, age_s, state: fresh \| expired} or null}}}. state is after aging (past ttl → unknown); last_claim is what the event said. Every stall in campus.json appears; never seen → unknown. lots is what each map pin shows. | DI-2 · DI-3 | BD-8 · DI-4 · DK-3 | W1 |
-| SK-ANSWER | guidance.answer(status, layout, now, vehicle_class, driver_id) | {vehicle_class, grain: stall \| zone \| count \| none, stall_id?, zone_id?, free_count?, total_count?, based_on: {source, observed_at, age_s, cadence_class}, hold_until?} | BD-8 · BD-9 | DI-4 | W3 |
-| SK-VIEW | GET http://localhost:8765/view?vehicle_class=regular&driver_id=… | {as_of, status: SK-STATUS, answer: SK-ANSWER or null}. Nothing else: no truth, no simulator state, no debug keys. | DI-4 | DK-3 · DK-4 · DI-5 · DI-6 | W2 |
+| SK-ANSWER | guidance.answer(status, layout, now, vehicle_class, driver_id, lot_id=None) | null when no lot_id is given (no location, no click: nothing is pushed at the driver). Else {vehicle_class ∈ regular \| ada \| ev, lot_id, grain: stall \| zone \| count \| none, stall_id?, zone_id?, free_count?, total_count?, based_on: {source, observed_at, age_s, cadence_class, fresh}, hold_until?}. Unknown vehicle_class or lot_id raises ValueError. | BD-8 · BD-9 | DI-4 | W3 |
+| SK-VIEW | GET http://localhost:8765/view?vehicle_class=regular&driver_id=…&lot_id=… (lot_id optional; a bad vehicle_class or lot_id is a 400) | {as_of, status: SK-STATUS, answer: SK-ANSWER or null}. Nothing else: no truth, no simulator state, no debug keys. | DI-4 | DK-3 · DK-4 · DI-5 · DI-6 | W2 |
 
 ## Guidance rules (D4, used by BD-8)
 - A stall is named only from a free claim of cadence continuous or near_live still inside its ttl.
+- A camera that reports every 5 minutes (the PKLot photo lots) is near_live, ttl 8m (decided 2026-10-12). 15-minute and slower sources never name a stall.
+- Inside a lot, closest = row A first, then the lower stall number, until lots have real coordinates.
 - Any other claim inside its ttl → a zone, with its age. Past ttl → the last count and its age, no stall.
 - Regular car → regular stalls only. ADA → ADA first, then regular. EV → EV first, then regular.
 - A zone count for a regular car is free_count minus that zone's ADA + EV stalls (floor 0): a lower bound.
@@ -33,7 +35,7 @@ Weeks: W1, W2, W3. Lanes: BD, DI, DK. Read BRIDGES.md first.
 | BD-5 | W1 | README.md | — | SK-FEED | One feed line explained in plain words; ttl example matches sim.py. **Landed.** |
 | BD-6 | W1 | git, README "Run it" | — | — | A fresh clone runs the simulator in ten minutes on stock Python 3.10+. **Landed.** |
 | BD-7 | W2 | out/quick, out/slow | SK-FEED · SK-TRUTH | SK-VIEW | Same --now: the slow run's page shows more unknown and older ages. |
-| BD-8 | W3 | parkfind/guidance.py | SK-ANSWER | SK-STATUS · SK-LAYOUT | Quick run → stall answers; slow run → zone or count; never a regular car to ADA/EV. |
+| BD-8 | W3 | parkfind/guidance.py | SK-ANSWER | SK-STATUS · SK-LAYOUT | Quick run → stall answers; slow run → zone or count; never a regular car to ADA/EV. **Landed 2026-10-12.** |
 | BD-9 | W3 | parkfind/guidance.py | SK-ANSWER | — | Two driver_ids never share a stall; same driver twice → same stall; no hold on zone/count answers; hold ends by observed_at + ttl. |
 | BD-10 | W2 | vision.py, cameras/<camera>.json | SK-FEED (camera lots) | SK-EVENT · photos in data/ | Photos in, one event per stall per photo, stamped with the photo's capture time; same feed shape as sim.py. Baseline classifier for now. **Started.** |
 

@@ -74,3 +74,23 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   checked: sim → server (--speed 60 and frozen 08:15) → page in a headless browser; 200 stalls, no page errors, counts match truth.json.
   → DI: please review your two files; the shapes are in CONTRACT SK-STATUS. read_feed is unchanged.
   → DK: please review WebPage, move the nine LOT_MARKERS to the real lot positions, and check the pop-up distances (they are within-lot only now).
+
+2026-10-12 · BD-8 landed · writes SK-ANSWER · edited DI and DK files at the lead's request
+  landed: parkfind/guidance.py — answer(status, layout, now, vehicle_class, driver_id, lot_id) per D4:
+          stall (live + free + inside ttl) → zone → count → none. Regular cars never get ADA/EV. No lot_id → null.
+  landed (DI file, by BD): server.py takes lot_id and returns 400 on a bad lot_id or vehicle_class.
+          The feed is now read once and reused until the file changes (events_until); each request was re-reading
+          the whole day (about 1 s). Same events, same validation: status matches read_feed at five replay times.
+  landed (DK file, by BD): "the map tells the truth" —
+          lot pins are coloured by how full the lot is (green ≥ 25% free, amber, red, grey = old data) and labelled "13/32";
+          a legend explains the colours; the ADA/EV tabs hide lots with none and recount the rest;
+          a lot window leads with guidance's answer and preselects the stall it names (outlined blue);
+          the spot chip list is gone; users see "Row B · spot 04", never sage:B-04; search takes "Sage" or "Sage B-04";
+          "Live · updated 7:18 AM" in campus time; the route leaves the gate along Michigan Ave toward the lot's own pin
+          (PLACEHOLDER geometry, no distance quoted outside the lot); closest-lots-to-a-building uses the pins, not the
+          pop-up drawing space (it was naming the same two lots for every building); the close-up inset now hides when
+          a route is dropped (it used to stay up forever).
+  checked: headless browser walk through pin, tab, building, search, route; no page errors; window badge always equals its pin.
+  → DI: please review server.py (events_until) and pull before your next change there.
+  → DK: please review WebPage. Pin colours/counts live in lotPinState/updateLotPins, keyed by lot_id, so they carry
+        over to the live map you're building. When you do, campus.json needs lat/long per lot; ask BD and we add it together.

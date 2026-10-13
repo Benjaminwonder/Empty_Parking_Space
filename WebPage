@@ -41,6 +41,7 @@ public class WebPage {
 
     static class Layout {
         String lotId;
+        String utcOffset = "+00:00";  // campus.json's lot-local offset; the page shows times in it
         List<Stall> stalls = new ArrayList<>();
         // lot_id -> display name, in campus.json order (each lot becomes one pin on the map)
         Map<String, String> lotNames = new LinkedHashMap<>();
@@ -107,6 +108,10 @@ public class WebPage {
 
         if (campusMatcher.find()) {
             layout.lotId = campusMatcher.group(1);
+        }
+        Matcher offsetMatcher = Pattern.compile("\"utc_offset\"\\s*:\\s*\"([^\"]+)\"").matcher(json);
+        if (offsetMatcher.find()) {
+            layout.utcOffset = offsetMatcher.group(1);
         }
 
         // Each lot is one object starting at "lot_id". Cut the text into one chunk per
@@ -244,6 +249,7 @@ public class WebPage {
         }
 
         return "{\"lot\":\"" + esc(layout.lotId) + "\","
+                + "\"utc_offset\":\"" + esc(layout.utcOffset) + "\","
                 + "\"zones\":[" + String.join(",", zoneJson) + "]}";
     }
 
@@ -1039,6 +1045,60 @@ ol.steps li {
     50% { opacity: 0.2; }
 }
 
+/* the live label, top right: a pill that says when the data was true, in campus time */
+.updated {
+    padding: 6px 14px 6px 12px;
+    border-radius: 18px;
+    border: 1px solid #e0e3e5;
+    background: #f8faf9;
+    font-size: 14px;
+    color: #1f2933;
+}
+.updated.ok { background: #ecfdf3; border-color: #b7e4c7; }
+.updated.down { background: #fef2f2; border-color: #f5c2c2; color: #991b1b; }
+.updated b { font-weight: bold; }
+.dot.ok { box-shadow: 0 0 0 0 rgba(27, 138, 58, 0.6); animation: pulse 2s infinite; }
+@keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(27, 138, 58, 0.55); }
+    70% { box-shadow: 0 0 0 8px rgba(27, 138, 58, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(27, 138, 58, 0); }
+}
+
+/* lot pins: colour and count come from live data (see lotPinState) */
+.lot-pin-body.p-plenty { fill: #1b8a3a; }
+.lot-pin-body.p-filling { fill: #d97706; }
+.lot-pin-body.p-full { fill: #d62b2b; }
+.lot-pin-body.p-unsure { fill: #6b7280; }
+.pin-pill rect { fill: #ffffff; stroke: #d0d4d8; stroke-width: 1.5; }
+.pin-pill text { font-size: 21px; font-weight: bold; fill: #1f2933; }
+.pin-pill text.pill-sub { font-weight: normal; fill: #4b5563; }
+
+.map-legend { flex-wrap: wrap; max-width: calc(100% - 90px); }
+.map-legend .lg-title { font-weight: bold; }
+.map-legend .lg-note { color: #666; }
+
+/* the lot window leads with guidance's answer */
+.answer {
+    margin: 8px 0;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #eef4fe;
+    border: 1px solid #c9dafc;
+    font-size: 14px;
+}
+.answer.soft { background: #f3f4f6; border-color: #e0e3e5; }
+.answer .a-main { font-weight: bold; font-size: 15px; }
+.answer .a-sub { color: #555; font-size: 12px; margin-top: 3px; }
+.count-badge {
+    font-size: 12px;
+    font-weight: bold;
+    color: #ffffff;
+    padding: 3px 9px;
+    border-radius: 10px;
+    margin-left: auto;
+}
+.stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
+
 </style>
 </head>
 
@@ -1051,9 +1111,9 @@ ol.steps li {
         <div class="logo">ParkFind</div>
 
         <input id="search" class="search"
-               placeholder="Search a stall (e.g. sage:B-04)">
+               placeholder="Search a lot or a spot (e.g. Sage, or Sage B-04)">
 
-        <div class="updated">
+        <div class="updated" id="updated">
             <span class="dot" id="updatedDot"></span>
             <span id="updatedText">Connecting to live data&hellip;</span>
         </div>
@@ -1096,6 +1156,16 @@ ol.steps li {
             <div class="closeup-title" id="closeupTitle"></div>
             <div class="closeup-age" id="closeupAge"></div>
             <svg id="closeupSvg"></svg>
+        </div>
+
+        <!-- what the lot pin colours mean; the pins themselves are drawn by updateLotPins -->
+        <div class="map-legend">
+            <span class="lg-title">Lot pins</span>
+            <span><span class="k" style="background:#1b8a3a"></span>Plenty free</span>
+            <span><span class="k" style="background:#d97706"></span>Filling up</span>
+            <span><span class="k" style="background:#d62b2b"></span>Full</span>
+            <span><span class="k" style="background:#6b7280"></span>Not sure (old data)</span>
+            <span class="lg-note">13/32 = free / total &middot; ~ = last count we have</span>
         </div>
 
         <!-- the building key, always visible under the close-up -->
@@ -1387,6 +1457,14 @@ function markerFor(z) {
     return LOT_MARKERS[z.id] || null;
 }
 
+// lot_id -> the SVG pieces updateLotPins() recolours and relabels on every poll
+const lotPins = {};
+
+// the short name on a pin's label: "Sage Hall Lot" -> "Sage Hall"
+function shortName(z) {
+    return lotName(z).replace(/ Lot$/, "");
+}
+
 zones.forEach(function (z) {
     const m = markerFor(z);
     if (!m) {
@@ -1410,15 +1488,28 @@ zones.forEach(function (z) {
     const py = my - 6;
     const pin = el("g", { "class": "pin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
     el("title", {}, pin, lotName(z) + " · click to see its spots");
-    el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
-                 "class": "lot-pin-body" }, pin);
-    el("text", { x: 0, y: -27, "class": "lot-pin-label" }, pin, "P");
-    el("text", { x: 0, y: -12, "class": "lot-pin-label", "font-size": 9 }, pin, z.short || cap(z.id));
+    const body = el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
+                              "class": "lot-pin-body p-unsure" }, pin);
+    el("text", { x: 0, y: -24, "class": "lot-pin-label" }, pin, "P");
+    // the label beside the pin: lot name and its live count, sized to its text on every update
+    const pill = el("g", { "class": "pin-pill", transform: "translate(20 -52)" }, pin);
+    const pillBox = el("rect", { x: 0, y: 0, width: 120, height: 34, rx: 17 }, pill);
+    const pillText = el("text", { x: 12, y: 24 }, pill);
+    const pillName = el("tspan", { "class": "pill-sub" }, pillText, shortName(z) + "  ");
+    const pillCount = el("tspan", {}, pillText, "");
     pin.addEventListener("click", function (ev) {
         ev.stopPropagation();
         openForLot(z);
     });
+    lotPins[z.id] = { shape: g, pin: pin, body: body, box: pillBox, text: pillText, count: pillCount };
 });
+
+// lot pins go on top of building pins: the live count is what a driver came for
+function raiseLotPins() {
+    Object.keys(lotPins).forEach(function (id) {
+        pinLayer.appendChild(lotPins[id].pin);
+    });
+}
 
 // ---------- the buildings ----------
 // DK note: positions below are read off the real map (grid-by-grid), not
@@ -1624,6 +1715,9 @@ function setStatus(map) {
     if (route !== null) {
         drawCloseup();
     }
+    if (route !== null && route.started && !winOpen) {
+        showRoute();  // the side panel's "Live status" line ages with everything else
+    }
 }
 
 // ---------- DK-3: live status from SK-VIEW ----------
@@ -1656,40 +1750,92 @@ function formatAge(ageSeconds) {
     return Math.round(ageSeconds / 3600) + "h ago";
 }
 
+// as_of is UTC; drivers read campus time. Fixed offset from campus.json, like the rest of the trunk.
+function campusClock(iso) {
+    const t = Date.parse(iso.replace(/(\\.\\d{3})\\d+/, "$1"));
+    const m = /^([+-])(\\d{2}):(\\d{2})$/.exec(LAYOUT.utc_offset || "+00:00");
+    const offMin = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+    const d = new Date(t + offMin * 60000);
+    const hr = d.getUTCHours();
+    const mm = String(d.getUTCMinutes()).padStart(2, "0");
+    return ((hr + 11) % 12 + 1) + ":" + mm + " " + (hr < 12 ? "AM" : "PM");
+}
+
 function renderTopBar() {
+    const box = document.getElementById("updated");
     const dot = document.getElementById("updatedDot");
     const text = document.getElementById("updatedText");
-    if (!dot || !text) {
+    if (!box || !dot || !text) {
         return;
     }
+    box.classList.remove("ok", "down");
     dot.classList.remove("ok", "down");
+    while (text.firstChild) {
+        text.removeChild(text.firstChild);
+    }
     if (liveOk && lastAsOf) {
+        box.classList.add("ok");
         dot.classList.add("ok");
-        text.textContent = "Live \u00b7 as of " + lastAsOf;
+        h("b", undefined, "Live", text);
+        text.appendChild(document.createTextNode(" · updated " + campusClock(lastAsOf)));
     } else {
+        box.classList.add("down");
         dot.classList.add("down");
-        text.textContent = "Can't reach live data (SK-VIEW)";
+        text.textContent = "Can't reach live parking data";
     }
 }
 
+// the tab the driver picked decides which car guidance answers for
+function vehicleClass() {
+    return filter === "ADA" ? "ada" : (filter === "EV" ? "ev" : "regular");
+}
+
+let answers = {};      // lot_id -> SK-ANSWER, only for the lots open in the window
+let pollSeq = 0;       // which poll is newest; an older reply arriving late is dropped
+let appliedSeq = 0;
+
+function viewUrl(lotId) {
+    return SK_VIEW_URL + "?vehicle_class=" + vehicleClass() + "&driver_id=" +
+           encodeURIComponent(DRIVER_ID) + (lotId ? "&lot_id=" + encodeURIComponent(lotId) : "");
+}
+
+// why: one poll refreshes everything on screen from one moment of data, so pins, window,
+//      close-up and route panel never disagree with each other.
+// boundary: reads SK-VIEW only (status for everything, answer per open lot); writes page state.
+// ugly: replies can land out of order (a slow request after a fast newer one); the older
+//       reply is dropped, never painted over newer data.
 function fetchStatus() {
-    const url = SK_VIEW_URL + "?vehicle_class=regular&driver_id=" + encodeURIComponent(DRIVER_ID);
-    fetch(url)
-        .then(function (r) {
+    const seq = ++pollSeq;
+    const lotIds = (winOpen && win) ? win.lots.map(function (item) { return item.z.id; }) : [];
+    const asks = lotIds.length > 0 ? lotIds : [null];
+    Promise.all(asks.map(function (lotId) {
+        return fetch(viewUrl(lotId)).then(function (r) {
             if (!r.ok) {
                 throw new Error("bad status " + r.status);
             }
             return r.json();
-        })
-        .then(function (data) {
+        });
+    }))
+        .then(function (views) {
+            if (seq < appliedSeq) {
+                return;
+            }
+            appliedSeq = seq;
+            const data = views[0];
             stallInfo = data.status.stalls || {};
-            // each pin's count: status.lots[lot].last_count (hourly zone counts or a gate
-            // count), so a lot whose stalls are all unknown still shows "N / M free" and its age
+            // each pin's fallback count: status.lots[lot].last_count (hourly zone counts or a
+            // gate count), so a lot whose stalls are all unknown still shows "~N/M" and its age
             zoneInfo = {};
             const lots = data.status.lots || {};
             Object.keys(lots).forEach(function (lotId) {
                 if (lots[lotId].last_count) {
                     zoneInfo[lotId] = lots[lotId].last_count;
+                }
+            });
+            answers = {};
+            views.forEach(function (v, i) {
+                if (asks[i] && v.answer) {
+                    answers[asks[i]] = v.answer;
                 }
             });
             const map = {};
@@ -1699,16 +1845,19 @@ function fetchStatus() {
             lastAsOf = data.as_of;
             liveOk = true;
             renderTopBar();
+            followAnswer();
             setStatus(map);
+            updateLotPins();
         })
         .catch(function () {
+            if (seq < appliedSeq) {
+                return;
+            }
             liveOk = false;
             renderTopBar();
         });
 }
 
-renderTopBar();
-fetchStatus();
 setInterval(fetchStatus, 5000);
 
 zones.forEach(function (z) {
@@ -1718,9 +1867,17 @@ Object.keys(stalls).forEach(function (id) {
     stalls[id].zone.ids.push(id);
 });
 
+// the stalls the selected tab is about: every stall on "All spots", else only that type
+function tabIds(z) {
+    return z.ids.filter(function (id) {
+        return filter === "All" || stalls[id].type === filter;
+    });
+}
+
 function lotStats(z) {
-    const t = { free: 0, taken: 0, unknown: 0, total: z.ids.length };
-    z.ids.forEach(function (id) {
+    const ids = tabIds(z);
+    const t = { free: 0, taken: 0, unknown: 0, total: ids.length };
+    ids.forEach(function (id) {
         const s = statusOf(id);
         if (s === "free") {
             t.free++;
@@ -1731,6 +1888,103 @@ function lotStats(z) {
         }
     });
     return t;
+}
+
+// share of a lot that must be free for a green pin; above zero but below it is amber
+const PLENTY_SHARE = 0.25;
+
+// why: one verdict per lot (colour + "13/32") that the pin, the window badge and the legend all
+//      read, so the map and the pop-up can never show two different numbers for one lot.
+// boundary: reads STATUS (aged stall states) and zoneInfo (the lot's last count); the tab narrows it.
+// ugly: unknown is never counted as free. When most stalls are unknown we fall back to the lot's
+//       count, and an expired count is grey with "~": it is what we last knew, not what is there.
+function lotPinState(z) {
+    const t = lotStats(z);
+    if (t.total === 0) {
+        return null;  // no stall of this tab's type here: the pin hides
+    }
+    const verdict = function (free, total, fresh) {
+        let cls = "p-unsure";
+        if (fresh) {
+            cls = free === 0 ? "p-full" : (free / total >= PLENTY_SHARE ? "p-plenty" : "p-filling");
+        }
+        return { cls: cls, label: (fresh ? "" : "~") + free + "/" + total, free: free, total: total };
+    };
+    if (t.unknown <= t.total / 2) {
+        // stall sensors see most of the lot; any unknown stall is counted as not free
+        return verdict(t.free, t.total, true);
+    }
+    const count = zoneInfo[z.id];
+    if (count && (filter === "All" || filter === "Regular")) {
+        let free = count.free_count;
+        let total = count.total_count;
+        if (filter === "Regular") {
+            // a lot count includes ADA/EV stalls; for a regular car it is a lower bound (D4)
+            free = Math.max(0, free - (z.ids.length - t.total));
+            total = t.total;
+        }
+        return verdict(free, total, count.state === "fresh");
+    }
+    if (t.free === 0) {
+        // nothing known at all (before a lot's first count): "?" not "~0", which would read as full
+        return { cls: "p-unsure", label: "?/" + t.total, free: 0, total: t.total };
+    }
+    return verdict(t.free, t.total, false);
+}
+
+const PIN_HEX = { "p-plenty": "#1b8a3a", "p-filling": "#d97706", "p-full": "#d62b2b", "p-unsure": "#6b7280" };
+
+function updateLotPins() {
+    zones.forEach(function (z) {
+        const p = lotPins[z.id];
+        if (!p) {
+            return;
+        }
+        const st = lotPinState(z);
+        const show = st !== null;
+        p.shape.style.display = show ? "" : "none";
+        p.pin.style.display = show ? "" : "none";
+        if (!show) {
+            return;
+        }
+        p.body.setAttribute("class", "lot-pin-body " + st.cls);
+        p.count.textContent = st.label;
+        p.box.setAttribute("width", Math.ceil(p.text.getComputedTextLength() + 24));
+    });
+}
+
+// "sage:B-04" -> "Row B · spot 04": drivers read rows and numbers, not our ids
+function spotName(id) {
+    const local = id.split(":").pop();
+    return "Row " + local.split("-")[0] + " · spot " + local.split("-")[1];
+}
+
+// why: when guidance names a stall in the open window, preselect it, so the driver sees the best
+//      spot without hunting; it follows the answer on every poll until the driver picks their own.
+// boundary: only moves a route the page chose itself (route.auto); a driver's pick is never overridden.
+// ugly: a started route is never moved, even if its stall is taken meanwhile; claims (next slice) handle that.
+function followAnswer() {
+    if (!winOpen || !win || (route !== null && !route.auto)) {
+        return;
+    }
+    let pick = null;
+    win.lots.forEach(function (item) {
+        const a = answers[item.z.id];
+        if (pick === null && a && a.grain === "stall") {
+            pick = a.stall_id;
+        }
+    });
+    if (pick === null) {
+        if (route !== null) {
+            route = null;
+            drawMapRoute();
+        }
+        return;
+    }
+    if (route === null || route.id !== pick) {
+        route = { id: pick, started: false, auto: true };
+        drawMapRoute();
+    }
 }
 
 function roundedPath(pts, r) {
@@ -1767,23 +2021,18 @@ function meters(a, b) {
     return Math.round(dist(a, b) / PX_PER_M);
 }
 
-// DK note: the gate (on Michigan Ave) and the lot (on Oakdale Ave) are on
-// different roads now, so the drive has an extra leg: north up Woodland
-// Blvd first, then east into the lot. That's the [GATE_X, LOT_ROAD_Y] point
-// added below - everything else here is unchanged from before.
-function fullPath(st) {
+// Inside the lot only: entrance, down the lane, along the aisle, into the stall. This part is
+// drawn to scale (PX_PER_M); the drive from the gate to the lot is not, until the map has
+// real coordinates, so no distance is ever quoted for it.
+function lotPath(st) {
     const sx = st.x + STALL_W / 2;
     const sy = st.y + STALL_H / 2;
-
     const pts = [
-        [GATE_X, GATE_Y],
-        [GATE_X, LOT_ROAD_Y],
         [st.zone.laneX, LOT_ROAD_Y],
         [st.zone.laneX, st.aisleY],
         [sx, st.aisleY],
         [sx, sy]
     ];
-
     const clean = [pts[0]];
     for (let i = 1; i < pts.length; i++) {
         if (dist(clean[clean.length - 1], pts[i]) > 0.5) {
@@ -1791,6 +2040,20 @@ function fullPath(st) {
         }
     }
     return clean;
+}
+
+// The drive on the campus picture: out of the Main Gate along E Michigan Ave to the lot pin's
+// column, then straight to the pin. PLACEHOLDER geometry like the pins themselves; it shows the
+// direction to go, not a road-accurate path.
+function approachPath(z) {
+    const m = markerFor(z);
+    if (!m) {
+        return null;
+    }
+    const endX = (m.x + m.w / 2) * S;
+    const below = m.y * S > GATE_Y;
+    const endY = below ? m.y * S : (m.y + m.h) * S;
+    return [[GATE_X, GATE_Y], [endX, GATE_Y], [endX, endY]];
 }
 
 function totalMeters(pts) {
@@ -1801,27 +2064,31 @@ function totalMeters(pts) {
     return total;
 }
 
-function stepsFor(st, pts) {
+function stepsFor(st) {
     const aisle = st.zone.aisles[st.pair];
-    const between = aisle.rowB ? "between rows " + aisle.rowA + " and " + aisle.rowB
-                               : "beside row " + aisle.rowA;
-
-    // pts: gate, north up Woodland to the lot's road, lane turn-in,
-    // bottom of lane, end of aisle, stall
-    const north = unit(pts[0], pts[1]);
-    const east = unit(pts[1], pts[2]);
-    const down = unit(pts[2], pts[3]);
-    const along = unit(pts[3], pts[4]);
-    const into = unit(pts[4], pts[5]);
-
+    const rowA = aisle.rowA.split(":").pop();
+    const rowB = aisle.rowB ? aisle.rowB.split(":").pop() : null;
+    const between = rowB ? "between rows " + rowA + " and " + rowB : "beside row " + rowA;
     const steps = ["Start at the Main Gate (N Woodland Blvd and E Michigan Ave)."];
-    steps.push("Head north on N Woodland Blvd for " + meters(pts[0], pts[1]) + " m.");
-    steps.push("Turn " + turnWord(north, east) + " onto E Oakdale Ave and go " +
-               meters(pts[1], pts[2]) + " m.");
-    steps.push("Turn " + turnWord(east, down) + " into the " + lotName(st.zone) +
-               " entrance and drive " + meters(pts[2], pts[3]) + " m.");
-    steps.push("Turn " + turnWord(down, along) + " onto the aisle " + between +
-               " and follow it for " + meters(pts[3], pts[4]) + " m.");
+
+    const ap = approachPath(st.zone);
+    if (ap) {
+        const along = unit(ap[0], ap[1]);
+        const toLot = unit(ap[1], ap[2]);
+        steps.push("Head " + (along[0] > 0 ? "east" : "west") + " on E Michigan Ave toward " +
+                   lotName(st.zone) + ".");
+        steps.push("Turn " + turnWord(along, toLot) + " toward the " + lotName(st.zone) + " entrance.");
+    } else {
+        steps.push("Drive to the " + lotName(st.zone) + " entrance.");
+    }
+
+    const pts = lotPath(st);
+    const down = unit(pts[0], pts[1]);
+    const alongAisle = unit(pts[1], pts[2]);
+    const into = unit(pts[2], pts[3]);
+    steps.push("Inside the lot, drive down the entrance lane " + meters(pts[0], pts[1]) + " m.");
+    steps.push("Turn " + turnWord(down, alongAisle) + " onto the aisle " + between +
+               " and follow it for " + meters(pts[1], pts[2]) + " m.");
 
     let note = "";
     if (st.type === "ADA") {
@@ -1830,7 +2097,7 @@ function stepsFor(st, pts) {
     if (st.type === "EV") {
         note = " (EV charging stall)";
     }
-    steps.push(st.id + " is on your " + turnWord(along, into) + note + ".");
+    steps.push("Spot " + st.id.split(":").pop() + " is on your " + turnWord(alongAisle, into) + note + ".");
     return steps;
 }
 
@@ -1844,6 +2111,7 @@ function drawMapRoute() {
         routeLayer.removeChild(routeLayer.firstChild);
     }
     if (route === null) {
+        drawCloseup();  // hides the inset; returning without this left it showing a dropped route
         return;
     }
 
@@ -1853,10 +2121,12 @@ function drawMapRoute() {
     // own working space, which can be positioned anywhere and isn't what's
     // drawn on the campus picture anymore. Falls back to the old math only
     // if a zone has no real marker.
-    const m = markerFor(st.zone);
-    const endX = m ? (m.x + m.w / 2) * S : st.zone.laneX;
-    const endY = m ? m.y * S : (LOT_ROAD_Y + ROAD_HALF + 34);
-    const pts = [[GATE_X, GATE_Y], [GATE_X, LOT_ROAD_Y], [endX, LOT_ROAD_Y], [endX, endY]];
+    const pts = approachPath(st.zone);
+    if (pts === null) {
+        drawCloseup();
+        return;  // a lot with no pin on the picture has no drawable drive; its window still works
+    }
+    const endY = pts[2][1];
     const d = roundedPath(pts, 40);
 
     const g = el("g", { "class": route.started ? "route-g" : "route-g preview" }, routeLayer);
@@ -1942,20 +2212,24 @@ function drawCloseup() {
     // the start of the route, leaving the gate
     const st = stalls[route.id];
     const m = markerFor(st.zone);
-    const headingUp = [GATE_X, Math.max(y0, GATE_Y - HALF)];
-    const d = roundedPath([[GATE_X, GATE_Y], headingUp], 10);
+    // the first leg of the drive, so the inset points the way the route actually leaves the gate
+    const ap = approachPath(st.zone);
+    const east = ap === null || ap[1][0] >= GATE_X;
+    const firstLeg = [east ? Math.min(x1, GATE_X + HALF) : Math.max(x0, GATE_X - HALF), GATE_Y];
+    const d = roundedPath([[GATE_X, GATE_Y], firstLeg], 10);
     el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 8,
                  "stroke-linecap": "round" }, closeSvg);
     el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 4,
                  "stroke-linecap": "round",
                  "class": route.started ? "" : "route-flow" }, closeSvg);
 
-    el("text", { x: GATE_X + 14, y: y0 + 16, "font-size": 11, "font-weight": "bold",
-                 fill: "#14532d" }, closeSvg, "Heading to " + (m ? lotName(st.zone) : "the lot"));
+    el("text", { x: x0 + 8, y: y0 + 16, "font-size": 11, "font-weight": "bold",
+                 fill: "#14532d" }, closeSvg, "Heading " + (east ? "east" : "west") + " to " +
+                 (m ? lotName(st.zone) : "the lot"));
 }
 
 function selectSpot(id) {
-    route = { id: id, started: false };
+    route = { id: id, started: false, auto: false };
     drawMapRoute();
     refreshSelection();
     showHelp();
@@ -2002,15 +2276,23 @@ function h(tag, cls, text, parent) {
     return e;
 }
 
+// why: "closest lots to this building", measured on the campus picture between the building and each lot pin.
+// boundary: picture distance only; z.x/z.y are the pop-up's drawing space (every lot shares one
+//           origin there), so measuring with them would call the same two lots closest to everything.
+// ugly: lots hidden by the tab (no ADA/EV stall) are skipped; no metres are quoted until real coordinates.
 function closestLots(cx, cy) {
-    const list = zones.map(function (z) {
-        return { z: z, d: dist([cx, cy], [z.x + z.w / 2, z.y + z.h / 2]) };
+    const list = [];
+    zones.forEach(function (z) {
+        const m = markerFor(z);
+        if (m && tabIds(z).length > 0) {
+            list.push({ z: z, d: dist([cx, cy], [(m.x + m.w / 2) * S, (m.y + m.h / 2) * S]) });
+        }
     });
     list.sort(function (a, b) {
         return a.d - b.d;
     });
     return list.slice(0, 2).map(function (item, i) {
-        return { z: item.z, rank: i, meters: Math.round(item.d / PX_PER_M / 5) * 5 };
+        return { z: item.z, rank: i };
     });
 }
 
@@ -2042,7 +2324,7 @@ function openForLot(z) {
         title: lotName(z),
         sub: "Pick a spot to preview your route.",
         from: null,
-        lots: [{ z: z, rank: -1, meters: 0 }]
+        lots: [{ z: z, rank: -1 }]
     };
     openWindow();
 }
@@ -2050,12 +2332,12 @@ function openForLot(z) {
 function openForStall(id) {
     const st = stalls[id];
     win = {
-        title: "Spot " + id,
+        title: lotName(st.zone) + " · " + spotName(id),
         sub: "Pick a spot to preview your route.",
         from: null,
-        lots: [{ z: st.zone, rank: -1, meters: 0 }]
+        lots: [{ z: st.zone, rank: -1 }]
     };
-    route = { id: id, started: false };
+    route = { id: id, started: false, auto: false };
     drawMapRoute();
     openWindow();
 }
@@ -2063,10 +2345,10 @@ function openForStall(id) {
 function openForRoute() {
     const st = stalls[route.id];
     win = {
-        title: "Spot " + route.id,
+        title: lotName(st.zone) + " · " + spotName(route.id),
         sub: "Your route is started. Pick another spot to change it.",
         from: null,
-        lots: [{ z: st.zone, rank: -1, meters: 0 }]
+        lots: [{ z: st.zone, rank: -1 }]
     };
     openWindow();
 }
@@ -2076,6 +2358,7 @@ function openWindow() {
     winBack.classList.remove("hidden");
     renderWindow();
     showHelp();
+    fetchStatus();  // ask guidance about these lots now, not at the next 5-second tick
 }
 
 function closeWindow() {
@@ -2108,7 +2391,8 @@ function passes(id) {
     if (filter !== "All" && st.type !== filter) {
         return false;
     }
-    if (query !== "" && id.toUpperCase().indexOf(query) < 0) {
+    if (query !== "" && normalSearch(id).indexOf(query) < 0 &&
+        normalSearch(lotName(st.zone)).indexOf(query) < 0) {
         return false;
     }
     return true;
@@ -2133,7 +2417,7 @@ function lotDiagram(z, parent) {
     el("line", { x1: x0, y1: LOT_ROAD_Y, x2: x1, y2: LOT_ROAD_Y, stroke: "#ffffff", "stroke-width": 2,
                  "stroke-dasharray": "14 12", opacity: 0.7 }, root);
     el("text", { x: x0 + 12, y: y0 + 17, "class": "road-label", "text-anchor": "start",
-                 "font-size": 12 }, root, "E OAKDALE AVE");
+                 "font-size": 12 }, root, "ENTRANCE ROAD");
 
     el("rect", { x: z.x - LOT_PAD, y: z.y - LOT_PAD, width: z.w + 2 * LOT_PAD,
                  height: z.h + 2 * LOT_PAD, rx: 12, fill: "#8d9299", stroke: "#6b7280",
@@ -2159,7 +2443,8 @@ function lotDiagram(z, parent) {
                                      statusClass(statusOf(id)),
                             "data-id": id, "data-zone": z.id, "data-type": st.type }, root);
 
-        el("title", {}, g, id + " · " + st.type + " · status " + statusOf(id).replace("_", " "));
+        el("title", {}, g, spotName(id) + (st.type !== "Regular" ? " (" + st.type + ")" : "") +
+                           " · " + statusOf(id).replace("_", " "));
         el("rect", { x: st.x, y: st.y, width: STALL_W, height: STALL_H, rx: 5,
                      "class": "stall-rect" }, g);
 
@@ -2217,6 +2502,51 @@ function drawLotRoute(card) {
     el("circle", { cx: 0, cy: -22, r: 4.5, fill: "#ffffff" }, pin);
 }
 
+// why: lead the lot window with guidance's answer, worded at exactly the grain guidance gave
+//      (a stall, a row, a count, or nothing), always with how old it is.
+// boundary: reads one SK-ANSWER; draws text only. Picking the stall is followAnswer's job.
+// ugly: before the first reply for a just-opened lot there is no answer yet; say "checking", not "none".
+function renderAnswer(a, parent) {
+    const box = h("div", "answer", undefined, parent);
+    const main = h("div", "a-main", undefined, box);
+    const sub = h("div", "a-sub", undefined, box);
+    if (!liveOk) {
+        box.classList.add("soft");
+        main.textContent = "Can't reach live parking data";
+        sub.textContent = "Nothing here can be called free right now.";
+        return;
+    }
+    if (!a) {
+        box.classList.add("soft");
+        main.textContent = "Checking this lot…";
+        return;
+    }
+    const age = formatAge(a.based_on ? a.based_on.age_s : null);
+    if (a.grain === "stall") {
+        main.textContent = "Best spot: " + spotName(a.stall_id);
+        sub.textContent = "Seen free " + age + " by this lot's camera. Outlined in blue below.";
+    } else if (a.grain === "zone") {
+        box.classList.add("soft");
+        main.textContent = "Row " + a.zone_id.split(":").pop() + ": about " + a.free_count + " free";
+        sub.textContent = "As of " + age + ". This lot's sensor is too slow to promise one spot.";
+    } else if (a.grain === "count") {
+        box.classList.add("soft");
+        main.textContent = "Last count: " + a.free_count + " / " + a.total_count + " free";
+        sub.textContent = (a.based_on && a.based_on.fresh ? "Counted " : "Too old to trust: counted ") +
+                          age + ". This lot only counts cars, it can't see single spots.";
+    } else {
+        box.classList.add("soft");
+        const z = zones.find(function (q) { return q.id === a.lot_id; });
+        const anyFree = z && lotStats(z).free > 0;
+        // the pin can count a free ADA/EV stall that a regular car may not use; say so, don't contradict it
+        main.textContent = anyFree && a.vehicle_class === "regular"
+            ? "Free spots here are ADA or EV only" : "No free spot we can vouch for";
+        sub.textContent = anyFree && a.vehicle_class === "regular"
+            ? "Pick the ADA or EV tab if that's you. Otherwise try a nearby lot."
+            : "Nothing seen free here recently. Spots in grey are unknown, not free.";
+    }
+}
+
 function lotCard(item) {
     const z = item.z;
     const card = { z: z, spots: {} };
@@ -2232,17 +2562,14 @@ function lotCard(item) {
     }
     h("span", "lot-name", lotName(z), head);
 
+    // the same verdict as this lot's pin, so the window and the map always agree
+    const pinState = lotPinState(z);
+    if (pinState) {
+        const badge = h("span", "count-badge", pinState.label + " free", head);
+        badge.style.background = PIN_HEX[pinState.cls];
+    }
+
     const stats = lotStats(z);
-    const full = stats.total > 0 && stats.free === 0 && stats.unknown === 0;
-    if (full) {
-        h("span", "rank rfull", "FULL", head);
-    }
-
-    if (item.rank >= 0 && win.from) {
-        h("div", "lot-sub", "about " + item.meters + " m from " + win.from +
-                            " (straight line)", box);
-    }
-
     const line = h("div", "stat-line", undefined, box);
     [["free", "#1b8a3a", stats.free], ["taken", "#d62b2b", stats.taken],
      ["unknown", "#6b7280", stats.unknown]].forEach(function (s) {
@@ -2252,17 +2579,7 @@ function lotCard(item) {
         item2.appendChild(document.createTextNode(s[2] + " " + s[0]));
     });
 
-    // DK-3: the zone's own claim from SK-VIEW (status.zones), which can
-    // still carry a count even when the individual stalls have aged into
-    // unknown - this is separate from stats above, which only counts what
-    // the stalls themselves say
-    const zClaim = zoneInfo[z.id];
-    if (zClaim && zClaim.total_count !== undefined) {
-        const age = formatAge(zClaim.age_s);
-        h("div", "lot-sub", "Last count: " + zClaim.free_count + " / " + zClaim.total_count +
-                            " free" + (age ? " \u00b7 " + age : "") +
-                            (zClaim.state === "expired" ? " (too old to trust)" : ""), box);
-    }
+    renderAnswer(answers[z.id], box);
 
     const dg = lotDiagram(z, box);
     card.svg = dg.svg;
@@ -2270,51 +2587,10 @@ function lotCard(item) {
     card.routeG = dg.routeG;
     card.x0 = dg.x0;
 
-    const ids = z.ids.filter(passes);
-    const freeIds = ids.filter(function (id) { return statusOf(id) === "free"; });
-    let shown = freeIds;
-    let heading = "Available spots (" + freeIds.length + ")";
-
-    if (freeIds.length === 0) {
-        shown = ids.filter(function (id) { return !isTaken(statusOf(id)); });
-        heading = "Spots · live status unknown (" + shown.length + ")";
+    const a = answers[z.id];
+    if (a && a.grain === "stall" && card.nodes[a.stall_id]) {
+        card.nodes[a.stall_id].classList.add("best");
     }
-
-    shown = shown.slice().sort(function (a, b) {
-        return totalMeters(fullPath(stalls[a])) - totalMeters(fullPath(stalls[b]));
-    });
-
-    h("div", "list-title", heading, box);
-    if (freeIds.length === 0) {
-        h("div", "list-note", liveOk
-            ? "No spot here is currently claimed free. Pick any spot to preview the way in."
-            : "Can't reach live data right now, so no spot can be called available. " +
-              "Pick any spot to preview the way in.", box);
-    }
-
-    const list = h("div", "spot-list", undefined, box);
-    if (shown.length === 0) {
-        h("div", "list-note", "No spots to show for this filter.", list);
-    }
-    shown.forEach(function (id) {
-        const st = stalls[id];
-        const b = h("button", "spot", undefined, list);
-        const dot = h("span", "k", undefined, b);
-        dot.style.background = statusOf(id) === "free" ? "#1b8a3a" : "#6b7280";
-        b.appendChild(document.createTextNode(id));
-        if (st.type !== "Regular") {
-            h("span", "tag " + st.type.toLowerCase(), st.type, b);
-        }
-        h("span", "dist", totalMeters(fullPath(st)) + " m", b);
-        const age = stallInfo[id] ? formatAge(stallInfo[id].age_s) : "";
-        if (age) {
-            h("span", "spot-age", age, b);
-        }
-        b.addEventListener("click", function () {
-            selectSpot(id);
-        });
-        card.spots[id] = b;
-    });
 
     return card;
 }
@@ -2361,11 +2637,11 @@ function refreshSelection() {
         h("div", "foot-sub", "Pick a spot to see your route. It flashes blue as a preview.", info);
     } else {
         const st = stalls[route.id];
-        h("div", "foot-main", route.id + " · " + lotName(st.zone) + " · about " +
-                              totalMeters(fullPath(st)) + " m", info);
+        h("div", "foot-main", spotName(route.id) + " · " + lotName(st.zone), info);
         h("div", "foot-sub", route.started
             ? "Route started (solid blue)."
-            : "Previewing (flashing blue). Press Start route to begin.", info);
+            : (route.auto ? "Our pick for you, flashing blue. Pick another spot or press Start route."
+                          : "Previewing (flashing blue). Press Start route to begin."), info);
     }
 
     const legend = h("div", "win-legend", undefined, winFoot);
@@ -2410,34 +2686,35 @@ function showHelp() {
         return;
     }
 
-    add("div", "Click a building on the map to see the closest parking lots.", "sub");
-    add("div", "The lots aren't shown on the map. They open in a window when you pick " +
-               "a building or a P pin. You can also type a spot id (like sage:B-04) in the search box " +
-               "and press Enter.", "status-note");
+    add("div", "Click a P pin to open that lot, or a building to see the lots closest to it.", "sub");
+    add("div", "Each pin's colour and count update every few seconds. Grey means our newest " +
+               "data is too old to trust. You can also search for a lot or a spot " +
+               "(like Sage, or Sage B-04) and press Enter.", "status-note");
 }
 
 function showRoute() {
     clearSide();
     const st = stalls[route.id];
-    const pts = fullPath(st);
+    const pts = lotPath(st);
 
-    add("h2", route.id);
-    add("div", lotName(st.zone) + " · row " + st.row.split(":").pop() + " · spot " + st.n, "sub");
+    add("h2", spotName(route.id));
+    add("div", lotName(st.zone), "sub");
 
     const badges = add("div");
     const b1 = h("span", "badge" + (st.type === "ADA" ? " ada" : (st.type === "EV" ? " ev" : "")),
                  st.type, badges);
     h("span", "badge", "Route started", badges);
 
-    add("div", "about " + totalMeters(pts) + " m", "total");
+    add("div", totalMeters(pts) + " m from the lot entrance", "total");
 
     const ol = add("ol", undefined, "steps");
-    stepsFor(st, pts).forEach(function (text) {
+    stepsFor(st).forEach(function (text) {
         h("li", undefined, text, ol);
     });
 
-    add("div", "Live status: " + statusOf(route.id).replace("_", " ") + ". This shows the " +
-               "way to the spot, it doesn't promise the spot is free.", "status-note");
+    const age = stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
+    add("div", "Live status: " + statusOf(route.id).replace("_", " ") + (age ? " (" + age + ")" : "") +
+               ". This shows the way to the spot, it doesn't promise the spot is free.", "status-note");
 
     const show = add("button", "Show lot", "btn");
     show.addEventListener("click", openForRoute);
@@ -2477,17 +2754,29 @@ function drawChips() {
         d.addEventListener("click", function () {
             filter = c.key;
             drawChips();
+            updateLotPins();  // hide lots with none of this type, recount the rest
             if (winOpen) {
+                if (route !== null && route.auto) {
+                    route = null;  // the old pick was for another kind of car
+                    drawMapRoute();
+                }
+                answers = {};
                 renderWindow();
             }
+            fetchStatus();    // guidance answers for the new car type right away
         });
     });
 }
 
 const searchBox = document.getElementById("search");
 
+// "Sage B-04", "sage:b-04" and "SAGE  B-04" all mean the same spot
+function normalSearch(text) {
+    return text.trim().toUpperCase().replace(/[\\s:]+/g, " ");
+}
+
 searchBox.addEventListener("input", function () {
-    query = searchBox.value.trim().toUpperCase();
+    query = normalSearch(searchBox.value);
     if (winOpen) {
         renderWindow();
     }
@@ -2495,12 +2784,23 @@ searchBox.addEventListener("input", function () {
 
 searchBox.addEventListener("keydown", function (ev) {
     if (ev.key === "Enter") {
-        const wanted = searchBox.value.trim().toUpperCase();
-        // ids are lower-case lot names (sage:B-04), so match without caring about case
-        const hit = Object.keys(stalls).find(function (id) { return id.toUpperCase() === wanted; });
+        const wanted = normalSearch(searchBox.value);
+        if (wanted === "") {
+            return;
+        }
+        const hit = Object.keys(stalls).find(function (id) { return normalSearch(id) === wanted; });
         if (hit) {
             query = "";
             openForStall(hit);
+            return;
+        }
+        // not a spot: the first lot whose name or id contains the text
+        const lot = zones.find(function (z) {
+            return normalSearch(lotName(z)).indexOf(wanted) >= 0 || normalSearch(z.id).indexOf(wanted) >= 0;
+        });
+        if (lot) {
+            query = "";
+            openForLot(lot);
         }
     }
 });
@@ -2587,6 +2887,10 @@ document.addEventListener("keydown", function (ev) {
 
 fit();
 showHelp();
+raiseLotPins();
+renderTopBar();
+updateLotPins();
+fetchStatus();  // first poll last: it reads the tab (filter), declared above
 
 </script>
 

@@ -7,7 +7,10 @@ SK-VIEW: GET /view?vehicle_class=regular&driver_id=...
 """
 
 import argparse
+import bisect
 import json
+import threading
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -17,6 +20,32 @@ from parkfind import guidance
 from parkfind.lastseen import load_layout, read_feed, status
 
 
+_FEED_CACHE = {"key": None, "times": [], "events": [], "rejected": 0}
+_FEED_LOCK = threading.Lock()
+_END_OF_TIME = datetime.max.replace(tzinfo=timezone.utc)
+
+
+def events_until(feed_path: Path, now):
+    """
+    why: The page polls every few seconds, often twice at once; re-reading and re-validating a
+    full day's feed on every request took about a second. Read it once, reuse it until it changes.
+    boundary: Same events read_feed returns, same validation; only the reading is shared.
+    ugly: The file can grow while we serve (a camera appending); a new size or modified time
+    means a full re-read, never a stale list.
+    """
+    stat = feed_path.stat()
+    key = (stat.st_mtime_ns, stat.st_size)
+    with _FEED_LOCK:
+        if _FEED_CACHE["key"] != key:
+            events, rejected = read_feed(feed_path, _END_OF_TIME)
+            events.sort(key=lambda e: e.observed_utc())
+            _FEED_CACHE.update(key=key, events=events, rejected=rejected,
+                               times=[e.observed_utc() for e in events])
+        cache = dict(_FEED_CACHE)
+    # events are sorted by observed time, so "everything seen by now" is a prefix
+    return cache["events"][:bisect.bisect_right(cache["times"], now)], cache["rejected"]
+
+
 def build_view(run, layout, clock, vehicle_class, driver_id, lot_id=None):
     """
     why: Build the current SK-VIEW response for a frontend request.
@@ -24,7 +53,7 @@ def build_view(run, layout, clock, vehicle_class, driver_id, lot_id=None):
     ugly: answer is null until the page names a lot (nearest to the driver, or a clicked pin).
     """
     now = clock()
-    events, rejected_lines = read_feed(run / "feed.jsonl", now)
+    events, rejected_lines = events_until(run / "feed.jsonl", now)
 
     current_status = status(events, layout, now)
     current_status["rejected_lines"] = rejected_lines
