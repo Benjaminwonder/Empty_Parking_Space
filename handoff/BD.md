@@ -125,3 +125,62 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   note: the page's second text block is ~53 KB of Java's 64 KB limit per string; the next big addition needs a part3.
   → DK: please review. The official map also shows Stetson's real parking lots (P01–P54, typed commuter / faculty /
         resident / visitor); our nine lot pins are still placeholders. Placing them on real lots is the next decision.
+
+2026-10-12 · real Stetson lots · writes SK-LAYOUT · edited DK file at the lead's request
+  landed: campus.json — each of the nine lots now stands for a real Stetson lot from the official map (Aug 2026):
+          official_lot + permits added, names are what drivers read. lot_id, rows, sizes and sensors unchanged, so
+          sim.py, last-seen, guidance, claims and saved runs keep working.
+          rinker → Lot 03 (Edmunds Center, open permit)        sage → Lot 33 (Sage, commuter/resident)
+          libn → Lot 25 (Flagler, commuter/faculty)             libs → Lot 41 (LBC, commuter/faculty)
+          hollis → Lot 08 (Hollis Center, faculty/visitor/resident)   east → Lot 24 (Soccer Fields, faculty/visitor)
+          west1 → Lot 42 (Michigan Ave, commuter)               west2 → Lot 54 (Dog Park, commuter)
+          stetson → Lot 40 (Facilities, faculty/visitor)
+          Stall counts are still ours, not Stetson's; real counts come with real cameras.
+  landed (DK file, by BD): LOT_MARKERS moved onto those lots by the same fit as the buildings, then nudged off roads and
+          buildings (checked by code: no overlaps); lot labels pick a side so none clash or leave the map;
+          Fit now fills the map box's width, and with the Buildings switch on it fits the map's height and gives the rest
+          of the box to a full-height directory; tabs are colour-coded with icons (All green P, Regular car, ADA blue,
+          EV purple, Buildings teal, set apart by a divider); Release spot clears the route, close-up and side panel;
+          search takes "Lot 41" (a bare number stays a building number, as on the official map).
+  checked: page walk, counted lots, two-driver claim with no-show notice, label clash test; no page errors.
+  docs: README run steps now sim --minutes 900 and server --speed 10; CONTRACT SK-LAYOUT lists official_lot/permits.
+  note: the page's second text block is now ~56 KB of Java's 64 KB limit; the next big addition needs a part3.
+  → DK: please review WebPage; when your live map lands, campus.json is where lat/long per lot should go.
+  → DI: nothing to change; lot names in status come from campus.json as before.
+
+2026-10-12 · page layout: whole map in view · edited DK file at the lead's request
+  landed (DK file, by BD): Fit shows the whole campus with no scrolling (zoom to the box's height) and shrinks the map box
+          to the map's width; the right-hand column (.side-col) takes the rest. The building directory moved out of the
+          map into that column, two columns wide, with a close button (closing = Buildings switch off). The lot window
+          now opens over map and column together so it keeps its full width. Legend made compact.
+  checked: 1366×768, 1700×1000, 1920×1080: no scrolling inside the map or the page; page walk and claim/release still clean.
+  → DK: layout is .layout = .map-box (width set by fit()) + .side-col (flex: 1, min 320px); phones stack them.
+
+2026-10-12 · claim rules on the page; legend fades · edited DI and DK files at the lead's request
+  landed (DI file, by BD): POST /claim takes vehicle_class and refuses a regular car claiming an ADA or EV spot (409 wrong_type).
+          Found by test: with "All spots" selected, a regular driver could claim an ADA stall; guidance never sent one there,
+          but nothing stopped a claim.
+  landed (DK file, by BD): "Claim this spot" is always shown and greyed out (not clickable) unless the spot is seen free
+          and suits the car; the reason is on hover; "Just show the way" offers directions without a claim.
+          The map legend is hidden until the pointer is over the map, fades in, fades out slowly on leave, and stays
+          hidden while zoomed in past Fit.
+  checked: page walk; taken vs free spot buttons; regular→ADA claim refused by the server, ADA→ADA accepted; claim rule tests.
+  → DI: please review the vehicle_class check in do_POST.
+
+2026-10-12 · map layout: stretched middle, calm pins, live lot list · edited DK file at the lead's request
+  landed (DK file, by BD):
+    stretch  — WX()/WY() map picture units to drawn pixels: space grows around the dense centre and eases toward the
+               edges, total size unchanged. One stretch per axis, so roads stay straight; buildings keep their size and
+               only their spacing changes (they shrink only where an edge is squeezed). Measurements (closest lots,
+               route directions) still use the real, unstretched positions. Tune it in STRETCH.
+               Checked: building/road overlaps went from 30 (all already in the original placement) to 21, none new.
+    pins     — only lot pins and the 10 landmarks show; every other building is an outline whose name appears on
+               hover. The Buildings switch brings all pins + the directory; closing it takes them away.
+    layout   — right column 360px: help card + "Lots right now" (every lot, colour, fill bar, count; most room first,
+               old data last; same verdict as the pins). With Buildings on, the column widens to 560px for the
+               directory and the list steps aside. The map box takes the rest and Fit fills it; the streets, lawn and
+               trees run on past the picture's edges (bleed) instead of leaving empty lawn.
+    size     — the page is now cut into part1/part2/part3 (Java's 64 KB per string constant); cut at function boundaries.
+  checked: 1366×768, 1600×900, 1920×1080 with no scrolling; hover names; switch open/close; list row opens its lot;
+           page walk, counted lots, claim buttons, legend fade, two-driver claim with no-show notice.
+  → DK: please review; when your live map lands, the stretch is no longer needed (real tiles handle zoom).

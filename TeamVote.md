@@ -12,11 +12,12 @@ Ideas and features wait here until the team votes. Nothing is built from this fi
 ## Ideas
 
 ### V-3 · Real map with real coordinates · DK
+Note (BD, 2026-10-12): lots and buildings now sit where Stetson's official map puts them (Aug 2026 edition), still on the drawn picture; real coordinates remain open.
 What: replace the hand-drawn campus picture with a live map (map tiles); lots get lat/long in campus.json.
 Why: location, distances and routes are only honest on real coordinates.
 BD: yes
 
-### V-4 · Building names and pictures on the map · BD
+### V-4 · Building names and pictures on the map · BD · **names carried 2026-10-12** (pictures still open)
 What: real Stetson building names on the map instead of "Building 1–80"; small photos only if we took them or they are clearly licensed.
 Why: drivers know "Sage Hall", not "Building 44".
 BD: yes

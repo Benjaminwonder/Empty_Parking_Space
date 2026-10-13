@@ -113,7 +113,7 @@ def load_campus(path: Path) -> tuple[dict, list[tuple[dict, list[Stall]]]]:
             for n in range(1, lot["stalls_per_row"] + 1):
                 local = f"{row}-{n:02d}"
                 constraint = "ada" if local in special_ada else "ev" if local in special_ev else "any"
-                # Each row is a zone, so guidance can say "row B at Sage Hall".
+                # Each row is a zone, so guidance can say "row B at the Sage lot".
                 stalls.append(Stall(f"{lid}:{local}", f"{lid}:{row}", row, constraint))
         unknown = (special_ada | special_ev) - {s.stall_id.split(":", 1)[1] for s in stalls}
         if unknown:

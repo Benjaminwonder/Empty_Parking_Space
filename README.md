@@ -82,8 +82,11 @@ whole campus live cameras, the second only slow feeds. Same morning, very differ
 Where things live:
 
 - `sim.py`: the fake lot and its fake sensors
-- `campus.json`: the nine lots (200 stalls) everyone reads
-- `parkfind/`: the program itself: `event.py` (the update format), `clock.py` (what time it is)
+- `campus.json`: the nine lots (200 stalls) everyone reads; each stands for a real Stetson lot (`official_lot`, `permits`)
+- `parkfind/`: the program itself: `event.py` (the update format), `clock.py` (what time it is),
+  `lastseen.py` (what every stall last looked like), `guidance.py` (where to send a driver),
+  `claims.py` (who holds which spot), `server.py` (serves it all to the page)
+- `WebPage`: the map drivers use (Java, served at http://localhost:8085)
 - `BRIDGES.md` and `handoff/`: how the team splits and hands off work
 
 ### See it in the browser
@@ -91,18 +94,25 @@ Where things live:
 Needs Java 17 or newer for the page. Use three terminals, all in the repo folder:
 
 ```
-python sim.py
-python -m parkfind.server --run out/latest --speed 60
+python sim.py --minutes 900
+python -m parkfind.server --run out/latest --speed 10
 java --source 17 WebPage
 ```
 
-Then open http://localhost:8085. The server replays the simulated morning from 06:30 lot time,
-one simulated minute per real second; the page asks it for fresh status every five seconds.
+Then open http://localhost:8085. The simulator writes a full day from 06:30 lot time; the server
+replays it ten times faster than real time (so a claim's 8-minute window takes 48 seconds); the
+page asks for fresh status every five seconds.
 To freeze the morning at one moment instead, start the server with
 `--now 2026-09-21T08:15:00-04:00 --speed 0`.
 
-Click a P pin to open that lot: stalls show free, taken or unknown with their age, and lots
-that only count cars (an hourly count, a gate) show their last count and how old it is.
+Click a P pin to open that lot: it leads with the best spot for your car and how old that
+sighting is; stalls show free, taken, held or unknown, and lots that only count cars (an hourly
+count, a gate) show their counts row by row with their age. Press **Claim this spot** and nobody
+else is sent there; if no car reaches it within 8 minutes (13 or 23 for slower cameras), it is
+released and you are told. Search takes buildings, lots or spots: `CUB`, `Lot 41`, `Sage B-04`.
+
+The lots sit on real Stetson lots and every building carries its official name, from Stetson's
+DeLand campus map (edition of 7 Aug 2026, stetson.edu/maps).
 
 ---
 
@@ -112,7 +122,7 @@ that only count cars (an hourly count, a gate) show their last count and how old
 - **Occupancy fabric.** Sim, CCTV+YOLO, stall sensors, gate counts, partner APIs, periodic lot scrapes, and driver reports all write one canonical event.
 - **Freshness as a first-class field.** Every state has `confidence`, `source`, `observed_at`, `ttl`, and `cadence_class`. Stale data becomes `unknown`.
 - **Inside-lot maps.** Aisle graphs so we do not recommend a stall the driver cannot legally drive to from their current approach.
-- **Holds that expire with the data.** Hold windows shrink as the feed gets older. No hold on an hour-old lot total.
+- **Claims that end on their own.** First driver to claim a spot gets it; no car within the arrival window, or the car has left, and it is released. No claims where no sensor can see the spot.
 - **Driver reports as the patch between snapshots.** The live layer when cameras are not streaming.
 - **ADA and EV stalls are first-class constraints**, not filters bolted on later.
 - **Edge inference preferred.** Occupancy events leave the lot. Raw video does not have to.
@@ -146,7 +156,7 @@ Every sensor (today the simulator, later a camera) reports in this one shape:
  "stall_id": "sage:B-01", "zone_id": "sage:B", "lot_id": "sage"}
 ```
 
-Read it as: stall B-01 in row B of the Sage Hall Lot was seen free at 8:06:30 a.m. lot time
+Read it as: stall B-01 in row B of the Sage lot (Stetson's Lot 33) was seen free at 8:06:30 a.m. lot time
 (12:06:30 UTC), by a live camera that is 97% sure, and that claim is good for 90 seconds.
 
 - `state`: free · occupied · reserved · out_of_service · unknown. Unknown is never free.

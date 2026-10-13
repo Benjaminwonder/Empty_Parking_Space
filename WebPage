@@ -533,8 +533,29 @@ svg {
     font-size: 12px;
 }
 
+.layout { position: relative; }
+body.show-buildings .side-col { width: 560px; }
+body.show-buildings #lotList { display: none; }
+#lotList h2 { margin: 0 0 2px 0; font-size: 18px; }
+.lot-row { display: flex; align-items: center; gap: 8px; padding: 8px 4px; border-bottom: 1px solid #eef0f2;
+           font-size: 14px; cursor: pointer; border-radius: 6px; }
+.lot-row:hover { background: #f5f7f9; }
+.lot-row .lr-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.lot-row .lr-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lot-row .lr-bar { width: 56px; height: 8px; background: #eef0f2; border-radius: 4px; overflow: hidden; flex: none; }
+.lot-row .lr-bar span { display: block; height: 8px; }
+.lot-row .lr-count { width: 46px; text-align: right; font-weight: bold; flex: none; }
+.key-group { grid-column: 1 / -1; }
+
+.side-col {
+    flex: none;
+    width: 360px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
 .side {
-    width: 320px;
     background: white;
     border: 1px solid #ddd;
     border-radius: 12px;
@@ -789,7 +810,8 @@ ol.steps li {
 
 @media (max-width: 900px) {
     .layout { flex-direction: column; }
-    .side { width: 100%; }
+    .map-box { width: 100% !important; }
+    .side-col { width: 100%; min-width: 0; }
 }
 
 .win-back {
@@ -1073,7 +1095,11 @@ ol.steps li {
 .pin-pill text { font-size: 21px; font-weight: bold; fill: #1f2933; }
 .pin-pill text.pill-sub { font-weight: normal; fill: #4b5563; }
 
-.map-legend { flex-wrap: wrap; max-width: calc(100% - 90px); }
+.map-legend { flex-wrap: wrap; max-width: calc(100% - 90px); padding: 7px 14px; gap: 4px 12px;
+              font-size: 12px; border-radius: 14px; }
+.map-legend { opacity: 0; transition: opacity 1.2s ease; pointer-events: none; }
+.map-box:hover .map-legend { opacity: 1; transition: opacity 0.35s ease; }
+.map-box.zoomed .map-legend { opacity: 0; transition: opacity 1.2s ease; }
 .map-legend .lg-title { font-weight: bold; }
 .map-legend .lg-note { color: #666; }
 
@@ -1118,16 +1144,33 @@ ol.steps li {
 .b-label { display: none; font-size: 17px; font-weight: bold; fill: #374151; stroke: #ffffff;
            stroke-width: 4px; paint-order: stroke; pointer-events: none; }
 .b-label.landmark { display: inline; }
-.bpin { opacity: 0.45; }
-.bpin.landmark { opacity: 0.9; }
+.bpin { display: none; }
+.bpin.landmark { display: inline; }
+.b-label.hover { display: inline; }
+.building:hover .b-wall { stroke: #1a73e8; stroke-width: 3; }
 body.show-buildings .b-label { display: inline; }
-body.show-buildings .bpin { opacity: 1; }
+body.show-buildings .bpin { display: inline; }
 .bkey.hidden { display: none; }
+/* the directory now lives in the right-hand column, above the help/route panel */
+#bkey { position: static; width: auto; max-height: calc(100vh - 190px); box-shadow: none;
+        padding: 14px 12px 10px 16px; }
+#bkey .bkey-list { grid-template-columns: 1fr 1fr; }
+.bkey-head { display: flex; align-items: center; justify-content: space-between; }
+.bkey-head .win-x { width: 28px; height: 28px; font-size: 18px; }
+#bkey .bkey-title { font-size: 16px; }
 .bkey-list { grid-template-columns: 1fr; }
 .key-group { font-size: 11px; font-weight: bold; color: #6b7280; text-transform: uppercase;
              letter-spacing: 0.5px; margin: 8px 0 2px; }
-.chip.toggle { margin-left: auto; }
-.chip.toggle.on { background: #374151; border-color: #374151; }
+/* tabs: each carries its colour (--chip) on its icon and border; the picked one fills with it */
+.chip { display: inline-flex; align-items: center; gap: 7px; border: 1.5px solid #e0e3e5; }
+.chip .chip-icon { display: inline-flex; width: 16px; height: 16px; color: var(--chip); font-size: 15px;
+                   line-height: 16px; justify-content: center; }
+.chip .chip-icon svg { width: 16px; height: 16px; }
+.chip:hover { border-color: var(--chip); }
+.chip.on { background: var(--chip); border-color: var(--chip); color: #ffffff; }
+.chip.on .chip-icon { color: #ffffff; }
+.chip.on .chip-icon svg text { fill: var(--chip); }
+.chip-divider { width: 1px; align-self: stretch; background: #d0d4d8; margin: 2px 10px; }
 .stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
 
 </style>
@@ -1142,7 +1185,7 @@ body.show-buildings .bpin { opacity: 1; }
         <div class="logo">ParkFind</div>
 
         <input id="search" class="search"
-               placeholder="Search a building, lot or spot (e.g. CUB, Sage, Sage B-04)">
+               placeholder="Search a building, lot or spot (e.g. CUB, Lot 41, Sage B-04)">
 
         <div class="updated" id="updated">
             <span class="dot" id="updatedDot"></span>
@@ -1160,20 +1203,6 @@ body.show-buildings .bpin { opacity: 1; }
     <div class="map-box">
         <div class="map-scroll" id="scroll">
             <svg id="map"></svg>
-        </div>
-
-        <div class="win-back hidden" id="winBack">
-            <div class="win">
-                <div class="win-head">
-                    <div>
-                        <div class="win-title" id="winTitle"></div>
-                        <div class="win-sub" id="winSub"></div>
-                    </div>
-                    <button class="win-x" id="winX">&times;</button>
-                </div>
-                <div class="win-body" id="winBody"></div>
-                <div class="win-foot" id="winFoot"></div>
-            </div>
         </div>
 
         <div class="zoom">
@@ -1200,14 +1229,41 @@ body.show-buildings .bpin { opacity: 1; }
         </div>
 
         <!-- the building key, always visible under the close-up -->
+    </div>
+
+    <!-- the right-hand column takes whatever width the fitted map leaves -->
+    <div class="side-col">
         <div class="bkey hidden" id="bkey">
-            <div class="bkey-title">Buildings</div>
+            <div class="bkey-head">
+                <div class="bkey-title">Buildings</div>
+                <button class="win-x" id="bkeyX" title="Close the building directory">&times;</button>
+            </div>
             <div class="bkey-sub">Official names (Stetson campus map, Aug 2026). Click one for the closest parking.</div>
             <div class="bkey-list" id="buildingKeyList"></div>
         </div>
+        <div class="side" id="side"></div>
+        <div class="side" id="lotList">
+            <h2>Lots right now</h2>
+            <div class="sub">Most room first. Click a lot to open it.</div>
+            <div id="lotRows"></div>
+        </div>
     </div>
 
-    <div class="side" id="side"></div>
+    <!-- the lot window opens over map and column together, so it keeps its full width -->
+        <div class="win-back hidden" id="winBack">
+            <div class="win">
+                <div class="win-head">
+                    <div>
+                        <div class="win-title" id="winTitle"></div>
+                        <div class="win-sub" id="winSub"></div>
+                    </div>
+                    <button class="win-x" id="winX">&times;</button>
+                </div>
+                <div class="win-body" id="winBody"></div>
+                <div class="win-foot" id="winFoot"></div>
+            </div>
+        </div>
+
 
     <!-- one message at a time for things that happen to the driver's claim -->
     <div class="toast hidden" id="toast">
@@ -1250,8 +1306,59 @@ const LOT_HEAD = 28;
 
 // the Main Gate is where N Woodland Blvd crosses E Michigan Ave (measured:
 // Woodland Blvd x=168, Michigan Ave y=547, in picture units)
-const GATE_X = 168 * S;
-const GATE_Y = 547 * S;
+// ---------- the stretch ----------
+// why: the middle of campus is crowded and the edges are roomy, so space is stretched where it is
+//      needed: distance grows most around the dense centre and less toward the edges, while the map's
+//      total size stays the same (so Fit still shows all of it).
+// boundary: only how the picture is DRAWN. Every measurement (closest lot, routes' directions,
+//           everything the server says) uses the real, unstretched positions.
+// ugly: one stretch per axis, so roads stay straight and buildings stay upright; buildings keep
+//       their size and only their spacing changes, never their order along a road.
+const STRETCH = { x: { centre: 300, spread: 160, gain: 0.8, len: 690 },
+                  y: { centre: 450, spread: 190, gain: 0.8, len: 736 } };
+
+function stretchTable(o) {
+    // density k(u) = base + gain·e^(−((u−centre)/spread)²), with base set so the total length is unchanged
+    let bump = 0;
+    for (let u = 0; u < o.len; u++) {
+        bump += Math.exp(-Math.pow((u + 0.5 - o.centre) / o.spread, 2));
+    }
+    const base = 1 - o.gain * bump / o.len;
+    const t = [0];
+    for (let u = 0; u < o.len; u++) {
+        t.push(t[u] + base + o.gain * Math.exp(-Math.pow((u + 0.5 - o.centre) / o.spread, 2)));
+    }
+    return t;
+}
+const TX = stretchTable(STRETCH.x);
+const TY = stretchTable(STRETCH.y);
+
+function along(t, u) {
+    const i = Math.max(0, Math.min(t.length - 2, Math.floor(u)));
+    return (t[i] + (t[i + 1] - t[i]) * (u - i)) * S;
+}
+// picture units -> drawn pixels
+function WX(u) { return along(TX, u); }
+function WY(v) { return along(TY, v); }
+
+// a picture-unit rectangle, drawn: thin things (roads) keep their thickness; buildings keep their size
+// unless the stretch squeezes them (then they shrink with it, so nothing overlaps at the edges)
+function wRect(x, y, w, h, keepSize) {
+    const fit = function (a, len, f) {
+        const lo = f(a), hi = f(a + len);
+        if (len <= 10 || keepSize) {
+            const size = Math.min(len * S, hi - lo);
+            const mid = f(a + len / 2);
+            return [mid - size / 2, size];
+        }
+        return [lo, hi - lo];
+    };
+    const X = fit(x, w, WX), Y = fit(y, h, WY);
+    return { x: X[0], y: Y[0], w: X[1], h: Y[1] };
+}
+
+const GATE_X = WX(168);
+const GATE_Y = WY(547);
 
 // the lot's own road is East Oakdale Ave (measured y=98), the road the
 // O-series commuter lots open onto, north of the Rinker Intramural block
@@ -1395,7 +1502,7 @@ function keepClear(x, y, w, h, pad) {
     solid.push([x - p, y - p, w + 2 * p, h + 2 * p]);
 }
 
-el("rect", { x: 0, y: 0, width: MAP_W, height: MAP_H, fill: "#cfe3c1" }, svg);
+const bgLawn = el("rect", { x: 0, y: 0, width: MAP_W, height: MAP_H, fill: "#cfe3c1" }, svg);
 
 const lawnLayer = el("g", {}, svg);
 const treeLayer = el("g", {}, svg);
@@ -1406,8 +1513,8 @@ const pinLayer = el("g", {}, svg);
 const routeLayer = el("g", { "pointer-events": "none" }, svg);
 
 function lawn(x, y, w, h) {
-    el("rect", { x: x * S, y: y * S, width: w * S, height: h * S, rx: 24,
-                 fill: "#dcebd2" }, lawnLayer);
+    const r = wRect(x, y, w, h);
+    el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, rx: 24, fill: "#dcebd2" }, lawnLayer);
 }
 // open fields, measured from the real map: Rinker Intramural Field (between
 // Oakdale/Pennsylvania and Woodland/Bertha Fish), and Stetson Green (the quad)
@@ -1417,20 +1524,25 @@ lawn(440, 262, 152, 142);     // Stetson Green (the quad)
 const quad = el("g", {}, lawnLayer);
 [[447, 270, 585, 398], [585, 270, 447, 398], [516, 266, 516, 402], [444, 334, 588, 334]]
     .forEach(function (l) {
-        el("line", { x1: l[0] * S, y1: l[1] * S, x2: l[2] * S, y2: l[3] * S,
+        el("line", { x1: WX(l[0]), y1: WY(l[1]), x2: WX(l[2]), y2: WY(l[3]),
                      stroke: "#efe9dd", "stroke-width": 7, "stroke-linecap": "round" }, quad);
     });
-el("circle", { cx: 510 * S, cy: 331 * S, r: 11 * S, fill: "#efe9dd" }, quad);
-el("circle", { cx: 510 * S, cy: 331 * S, r: 7 * S, fill: "#9fc5d9" }, quad);
-keepClear(446 * S, 268 * S, 140 * S, 130 * S, 0);
+el("circle", { cx: WX(510), cy: WY(331), r: 11 * S, fill: "#efe9dd" }, quad);
+el("circle", { cx: WX(510), cy: WY(331), r: 7 * S, fill: "#9fc5d9" }, quad);
+const quadBox = wRect(446, 268, 140, 130);
+keepClear(quadBox.x, quadBox.y, quadBox.w, quadBox.h, 0);
 
 function road(x, y, w, h, label, vertical) {
-    el("rect", { x: x * S, y: y * S, width: w * S, height: h * S, fill: "#9aa0a6" }, roadLayer);
-    keepClear(x * S, y * S, w * S, h * S, 4);
+    const r = wRect(x, y, w, h);
+    const rect = el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, fill: "#9aa0a6" }, roadLayer);
+    if (x === 0 && w === 690) {
+        rect.classList.add("full-road");   // runs on past the picture's edges when Fit widens the view
+    }
+    keepClear(r.x, r.y, r.w, r.h, 4);
 
     if (label) {
-        const cx = (x + w / 2) * S;
-        const cy = (y + h / 2) * S;
+        const cx = r.x + r.w / 2;
+        const cy = r.y + r.h / 2;
         if (vertical) {
             el("text", { x: cx, y: cy + 5, "class": "road-label",
                          transform: "rotate(-90 " + cx + " " + cy + ")" }, roadLayer, label);
@@ -1461,7 +1573,7 @@ road(0, 598, 690, 6, "EAST OHIO AVE", false);
 road(0, 644, 690, 6, "WISCONSIN AVE", false);
 
 // white center dashes on the two roads the route uses
-el("line", { x1: 0, y1: GATE_Y, x2: MAP_W, y2: GATE_Y, stroke: "#ffffff",
+const gateLine = el("line", { x1: 0, y1: GATE_Y, x2: MAP_W, y2: GATE_Y, stroke: "#ffffff",
              "stroke-width": 2, "stroke-dasharray": "14 12", opacity: 0.7 }, roadLayer);
 el("line", { x1: GATE_X, y1: 0, x2: GATE_X, y2: MAP_H, stroke: "#ffffff",
              "stroke-width": 2, "stroke-dasharray": "14 12", opacity: 0.7 }, roadLayer);
@@ -1477,19 +1589,25 @@ el("line", { x1: GATE_X, y1: 0, x2: GATE_X, y2: MAP_H, stroke: "#ffffff",
 // never drawn directly on the campus picture. Clicking a marker opens that
 // same detailed grid in the pop-up, same as before.
 // Campus (nine lots, campus.json): one marker per lot_id, in picture units.
-// PLACEHOLDER positions chosen by BD on open ground so nothing overlaps a building;
-// DK knows the real lot locations on the measured map and should move these.
+// Real Stetson lots (campus map, Aug 2026): each lot_id stands for the official lot named in
+// campus.json (official_lot), placed on that lot's outline by the same fit used for the
+// buildings, then nudged off roads and buildings (checked by code). Lot 41 wraps around the LBC,
+// so its marker is the open part east of the building.
 const LOT_MARKERS = {
-    rinker:  { x: 205, y: 118, w: 52, h: 32 },
-    sage:    { x: 415, y: 108, w: 60, h: 30 },
-    libn:    { x: 415, y: 170, w: 52, h: 28 },
-    libs:    { x: 52,  y: 615, w: 60, h: 30 },
-    hollis:  { x: 530, y: 130, w: 60, h: 40 },
-    east:    { x: 632, y: 340, w: 52, h: 50 },
-    west1:   { x: 30,  y: 225, w: 60, h: 40 },
-    west2:   { x: 20,  y: 358, w: 55, h: 36 },
-    stetson: { x: 460, y: 570, w: 52, h: 30 }
+    rinker:  { x: 190, y: 169, w: 29, h: 30 },
+    hollis:  { x: 281, y: 214, w: 25, h: 68 },
+    libn:    { x: 74, y: 468, w: 58, h: 18 },
+    libs:    { x: 222, y: 553, w: 56, h: 38 },
+    west1:   { x: 282, y: 553, w: 32, h: 40 },
+    sage:    { x: 339, y: 484, w: 48, h: 16 },
+    west2:   { x: 400, y: 553, w: 23, h: 18 },
+    east:    { x: 588, y: 350, w: 22, h: 66 },
+    stetson: { x: 634, y: 433, w: 20, h: 92 }
 };
+
+// which side of its pin each lot's label sits on, so labels near the map edge or near each
+// other don't cover one another (right is the default)
+const LABEL_SIDE = { libs: "left", west1: "below", east: "left", stetson: "left" };
 
 function markerFor(z) {
     return LOT_MARKERS[z.id] || null;
@@ -1508,7 +1626,8 @@ zones.forEach(function (z) {
     if (!m) {
         return;  // no real-photo spot known for this zone id - it still works from the pop-up, just isn't pinned on the map
     }
-    const mx = m.x * S, my = m.y * S, mw = m.w * S, mh = m.h * S;
+    const mr = wRect(m.x, m.y, m.w, m.h);
+    const mx = mr.x, my = mr.y, mw = mr.w, mh = mr.h;
 
     const g = el("g", { "class": "lot-shape" }, lotShapeLayer);
     el("title", {}, g, lotName(z) + " · click to see its spots");
@@ -1540,7 +1659,8 @@ zones.forEach(function (z) {
         openForLot(z);
     });
     lotPins[z.id] = { shape: g, pin: pin, body: body, box: pillBox, text: pillText, count: pillCount,
-                      pave: g.querySelector(".lot-pave") };
+                      pave: g.querySelector(".lot-pave"), pill: pill, side: LABEL_SIDE[z.id] || "right",
+                      markerH: mh };
 });
 
 // lot pins go on top of building pins: the live count is what a driver came for
@@ -1697,21 +1817,24 @@ BUILDINGS.forEach(function (b) {
     el("title", {}, g, b.n + " \u00b7 " + buildingName(b.n) + " \u00b7 click to see the closest parking");
 
     b.parts.forEach(function (p) {
-        el("rect", { x: p[0] * S + 4, y: p[1] * S + 6, width: p[2] * S, height: p[3] * S,
+        const d = wRect(p[0], p[1], p[2], p[3], true);
+        p.drawn = d;
+        el("rect", { x: d.x + 4, y: d.y + 6, width: d.w, height: d.h,
                      rx: 4, fill: "#000000", opacity: 0.16 }, g);
     });
     b.parts.forEach(function (p) {
-        el("rect", { x: p[0] * S, y: p[1] * S, width: p[2] * S, height: p[3] * S,
+        const d = p.drawn;
+        el("rect", { x: d.x, y: d.y, width: d.w, height: d.h,
                      rx: 4, "class": "b-wall" }, g);
-        el("rect", { x: p[0] * S + 6, y: p[1] * S + 6, width: Math.max(4, p[2] * S - 12),
-                     height: Math.max(4, p[3] * S - 12), rx: 3,
+        el("rect", { x: d.x + 6, y: d.y + 6, width: Math.max(4, d.w - 12),
+                     height: Math.max(4, d.h - 12), rx: 3,
                      fill: ROOFS[b.n % 3], "pointer-events": "none" }, g);
-        keepClear(p[0] * S, p[1] * S, p[2] * S, p[3] * S, 8);
+        keepClear(d.x, d.y, d.w, d.h, 8);
     });
 
     const top = b.parts[0];
-    const px = (top[0] + top[2] / 2) * S;
-    const py = top[1] * S + 8;
+    const px = top.drawn.x + top.drawn.w / 2;
+    const py = top.drawn.y + 8;
     const pin = el("g", { "class": "pin bpin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
     el("title", {}, pin, b.n + " \u00b7 " + buildingName(b.n) + " \u00b7 click to see the closest parking");
     el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
@@ -1744,6 +1867,9 @@ BUILDINGS.forEach(function (b) {
         ev.stopPropagation();
         openForBuilding(entry);
     }
+    // a building without its pin still tells you its name when you point at it
+    g.addEventListener("mouseenter", function () { label.classList.add("hover"); });
+    g.addEventListener("mouseleave", function () { label.classList.remove("hover"); });
     g.addEventListener("click", pick);
     pin.addEventListener("click", pick);
 });
@@ -2047,7 +2173,38 @@ function lotPinState(z) {
 
 const PIN_HEX = { "p-plenty": "#1b8a3a", "p-filling": "#d97706", "p-full": "#d62b2b", "p-unsure": "#6b7280" };
 
+// why: the answer to "where is there room?" without clicking anything: every lot, emptiest first.
+// boundary: reads lotPinState, the same verdict the pins and windows use, so all three always agree.
+// ugly: lots with only old data ("~" or "?") go last whatever their count, since we can't vouch for them.
+function renderLotList() {
+    const box = document.getElementById("lotRows");
+    if (!box) {
+        return;
+    }
+    while (box.firstChild) {
+        box.removeChild(box.firstChild);
+    }
+    zones.map(function (z) { return { z: z, s: lotPinState(z) }; })
+        .filter(function (r) { return r.s !== null; })
+        .sort(function (a, b) {
+            const ua = a.s.cls === "p-unsure" ? 1 : 0, ub = b.s.cls === "p-unsure" ? 1 : 0;
+            return ua - ub || (b.s.free / b.s.total) - (a.s.free / a.s.total);
+        })
+        .forEach(function (r) {
+            const row = h("div", "lot-row", undefined, box);
+            h("span", "lr-dot", undefined, row).style.background = PIN_HEX[r.s.cls];
+            h("span", "lr-name", lotName(r.z), row);
+            const bar = h("span", "lr-bar", undefined, row);
+            const fill = h("span", undefined, undefined, bar);
+            fill.style.width = Math.round(100 * r.s.free / r.s.total) + "%";
+            fill.style.background = PIN_HEX[r.s.cls];
+            h("span", "lr-count", r.s.label, row);
+            row.addEventListener("click", function () { openForLot(r.z); });
+        });
+}
+
 function updateLotPins() {
+    renderLotList();
     zones.forEach(function (z) {
         const p = lotPins[z.id];
         if (!p) {
@@ -2065,7 +2222,13 @@ function updateLotPins() {
         p.pave.style.fill = PIN_HEX[st.cls];
         p.pave.style.fillOpacity = 0.55;
         p.count.textContent = st.label;
-        p.box.setAttribute("width", Math.ceil(p.text.getComputedTextLength() + 24));
+        const pillW = Math.ceil(p.text.getComputedTextLength() + 24);
+        p.box.setAttribute("width", pillW);
+        if (p.side === "left") {
+            p.pill.setAttribute("transform", "translate(" + (-pillW - 20) + " -52)");
+        } else if (p.side === "below") {
+            p.pill.setAttribute("transform", "translate(" + (-pillW / 2) + " " + (p.markerH + 14) + ")");
+        }
     });
 }
 
@@ -2114,10 +2277,16 @@ document.getElementById("toastOk").addEventListener("click", function () {
     document.getElementById("toast").classList.add("hidden");
 });
 
-// a spot can be claimed only while a stall sensor sees it free (claims.py says the same, and decides)
+// which stall types the selected car may use (guidance's D4 tiers): regular never takes ADA/EV
+function typeAllowed(id) {
+    const t = stalls[id].type;
+    return t === "Regular" || (t === "ADA" && vehicleClass() === "ada") || (t === "EV" && vehicleClass() === "ev");
+}
+
+// a spot can be claimed only while a stall sensor sees it free and it suits the car (the server decides)
 function claimable(id) {
     const info = stallInfo[id];
-    return !!info && info.state === "free" && !info.held && !countedLot(stalls[id].zone);
+    return !!info && info.state === "free" && !info.held && !countedLot(stalls[id].zone) && typeAllowed(id);
 }
 
 // why: the one button that turns "our pick" into "yours": first press wins the spot on the server.
@@ -2125,7 +2294,7 @@ function claimable(id) {
 // ugly: someone else may claim it a second earlier; we say so and move on, we never retry the same spot.
 function claimSpot(id) {
     fetch(SK_VIEW_URL.replace("/view", "/claim") + "?stall_id=" + encodeURIComponent(id) +
-          "&driver_id=" + encodeURIComponent(DRIVER_ID), { method: "POST" })
+          "&driver_id=" + encodeURIComponent(DRIVER_ID) + "&vehicle_class=" + vehicleClass(), { method: "POST" })
         .then(function (r) {
             return r.json().then(function (body) { return { ok: r.ok, body: body }; });
         })
@@ -2148,11 +2317,18 @@ function claimSpot(id) {
         });
 }
 
+// why: letting go of a spot ends the trip to it: the route, the close-up and the side panel all clear.
+// boundary: POST /release for this driver only; the map is cleared at once, the server catches up.
+// ugly: if the release request fails, the claim still times out on the server by its own rules.
 function releaseSpot() {
+    myClaim = null;
+    if (winOpen) {
+        closeWindow();
+    }
+    endRoute();
     fetch(SK_VIEW_URL.replace("/view", "/release") + "?driver_id=" + encodeURIComponent(DRIVER_ID),
           { method: "POST" })
         .then(function () {
-            myClaim = null;
             fetchStatus();
         });
 }
@@ -2248,16 +2424,18 @@ function lotPath(st) {
 }
 
 // The drive on the campus picture: out of the Main Gate along E Michigan Ave to the lot pin's
-// column, then straight to the pin. PLACEHOLDER geometry like the pins themselves; it shows the
+// column, then straight to the pin. The pins sit on the real lots; this drive is still straight
+// lines, not the actual streets, so it shows the
 // direction to go, not a road-accurate path.
 function approachPath(z) {
     const m = markerFor(z);
     if (!m) {
         return null;
     }
-    const endX = (m.x + m.w / 2) * S;
-    const below = m.y * S > GATE_Y;
-    const endY = below ? m.y * S : (m.y + m.h) * S;
+    const mr = wRect(m.x, m.y, m.w, m.h);
+    const endX = mr.x + mr.w / 2;
+    const below = mr.y > GATE_Y;
+    const endY = below ? mr.y : mr.y + mr.h;
     return [[GATE_X, GATE_Y], [endX, GATE_Y], [endX, endY]];
 }
 
@@ -2401,7 +2579,7 @@ function drawCloseup() {
     // any nearby buildings, close enough to show up in this tight a crop
     BUILDINGS.forEach(function (b) {
         b.parts.forEach(function (p) {
-            const bx = p[0] * S, by = p[1] * S, bw = p[2] * S, bh = p[3] * S;
+            const bx = p.drawn.x, by = p.drawn.y, bw = p.drawn.w, bh = p.drawn.h;
             if (bx + bw < x0 || bx > x1 || by + bh < y0 || by > y1) {
                 return;
             }
@@ -2893,7 +3071,9 @@ function refreshSelection() {
             ? "Route started (solid blue)."
             : (claimable(route.id)
                 ? "Seen free. Claim it and nobody else is sent here."
-                : "Not seen free right now, so it can't be claimed. You can still see the way."), info);
+                : (!typeAllowed(route.id)
+                    ? "This is an " + stalls[route.id].type + " spot. Pick the " + stalls[route.id].type + " tab if it is for you."
+                    : "Not seen free right now, so it can't be claimed. You can still see the way.")), info);
     }
 
     const legend = h("div", "win-legend", undefined, winFoot);
@@ -2913,17 +3093,33 @@ function refreshSelection() {
         const go = h("button", "btn primary", route.started ? "Route started" : "Start route", winFoot);
         go.disabled = route.started;
         go.addEventListener("click", startRoute);
-    } else if (route !== null && claimable(route.id)) {
-        const claimBtn = h("button", "btn primary", "Claim this spot", winFoot);
-        claimBtn.addEventListener("click", function () { claimSpot(route.id); });
     } else {
-        // not seen free (or counted, or held by someone): the way there can be shown, the spot can't be promised
-        const start = h("button", "btn primary", "Start route", winFoot);
-        start.disabled = (route === null || route.started);
-        start.addEventListener("click", startRoute);
+        // Claim is always shown, so its state teaches the rule: live only on a spot seen free.
+        // Taken, held, unknown and counted spots get it greyed out, with the reason on hover;
+        // the way there is still offered, as a plain button, because a route promises nothing.
+        const ok = route !== null && claimable(route.id);
+        if (route !== null && !ok) {
+            const way = h("button", "btn", route.started ? "Route started" : "Just show the way", winFoot);
+            way.disabled = route.started;
+            way.addEventListener("click", startRoute);
+        }
+        const claimBtn = h("button", "btn primary", "Claim this spot", winFoot);
+        claimBtn.disabled = !ok;
+        claimBtn.title = ok ? "Hold this spot for you" : (route === null ? "Pick a spot first"
+                       : (!typeAllowed(route.id) ? "This is an " + stalls[route.id].type +
+                          " spot: pick the " + stalls[route.id].type + " tab if it is for you"
+                       : "Only a spot seen free can be claimed"));
+        claimBtn.addEventListener("click", function () {
+            if (ok) {
+                claimSpot(route.id);
+            }
+        });
     }
 }
 
+"""; 
+        // Java caps one string constant at 64 KB, so the page is cut into parts at function boundaries.
+        String part3 = """
 const side = document.getElementById("side");
 
 function clearSide() {
@@ -2953,8 +3149,8 @@ function showHelp() {
     add("div", "Click a P pin to open that lot, or a building to see the lots closest to it. " +
                "The Buildings switch at the top shows every building's name.", "sub");
     add("div", "Each pin's colour and count update every few seconds. Grey means our newest " +
-               "data is too old to trust. You can also search for a lot or a spot " +
-               "(like Sage, or Sage B-04) and press Enter.", "status-note");
+               "data is too old to trust. You can also search for a building, a lot or a spot " +
+               "(like CUB, Lot 41, or Sage B-04) and press Enter.", "status-note");
 }
 
 function showRoute() {
@@ -3017,31 +3213,63 @@ function countType(t) {
     return c;
 }
 
+// tab colours match the map: ADA blue and EV purple are the stall outlines inside a lot
+const ICON_P = '<svg viewBox="0 0 16 16"><rect x="1" y="1" width="14" height="14" rx="3" fill="currentColor"/>' +
+               '<text x="8" y="12" text-anchor="middle" font-size="11" font-weight="bold" fill="#fff">P</text></svg>';
+const ICON_CAR = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M3 7l1.5-3.5h7L13 7h1v5h-2v1.5h-2V12H6v1.5H4V12' +
+                 'H2V7zm2-.2h6l-1-2.3H6zM4.5 10a1 1 0 100-2 1 1 0 000 2zm7 0a1 1 0 100-2 1 1 0 000 2z"/></svg>';
+const ICON_BLDG = '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M8 1l7 3.5V6H1V4.5zM2 7h2v6H2zm3.5 0h2v6h-2zm3.5 ' +
+                  '0h2v6H9zm3.5 0h2v6h-2zM1 14h14v1.5H1z"/></svg>';
 const chipNames = [
-    { key: "All", text: "All spots" },
-    { key: "Regular", text: "Regular (" + countType("Regular") + ")" },
-    { key: "ADA", text: "ADA (" + countType("ADA") + ")" },
-    { key: "EV", text: "EV Charging (" + countType("EV") + ")" }
+    { key: "All", text: "All spots", color: "#14532d", icon: ICON_P },
+    { key: "Regular", text: "Regular (" + countType("Regular") + ")", color: "#374151", icon: ICON_CAR },
+    { key: "ADA", text: "ADA (" + countType("ADA") + ")", color: "#2563eb", glyph: ICON_ADA },
+    { key: "EV", text: "EV Charging (" + countType("EV") + ")", color: "#7c3aed", glyph: ICON_EV }
 ];
+
+function chipIcon(c, parent) {
+    const span = h("span", "chip-icon", undefined, parent);
+    if (c.icon) {
+        span.innerHTML = c.icon;
+    } else {
+        span.textContent = c.glyph;
+    }
+    return span;
+}
 
 const chipBox = document.getElementById("chips");
 
 let showBuildings = false;   // the Buildings switch: every name and the directory, or landmarks only
 
+document.getElementById("bkeyX").addEventListener("click", function () {
+    showBuildings = false;           // closing the directory is the same as switching Buildings off
+    document.body.classList.remove("show-buildings");
+    document.getElementById("bkey").classList.add("hidden");
+    drawChips();
+    fit();
+});
+
 function drawChips() {
     while (chipBox.firstChild) {
         chipBox.removeChild(chipBox.firstChild);
     }
-    const sw = h("div", "chip toggle" + (showBuildings ? " on" : ""),
-                 showBuildings ? "Buildings: all names" : "Buildings: landmarks only", undefined);
+    const swSpec = { color: "#0e7490", icon: ICON_BLDG };
+    const sw = h("div", "chip toggle" + (showBuildings ? " on" : ""), undefined, undefined);
+    sw.style.setProperty("--chip", swSpec.color);
+    chipIcon(swSpec, sw);
+    sw.appendChild(document.createTextNode(showBuildings ? "Buildings: all names" : "Buildings: landmarks"));
     sw.addEventListener("click", function () {
         showBuildings = !showBuildings;
         document.body.classList.toggle("show-buildings", showBuildings);
         document.getElementById("bkey").classList.toggle("hidden", !showBuildings);
         drawChips();
+        fit();
     });
     chipNames.forEach(function (c) {
-        const d = h("div", "chip" + (filter === c.key ? " on" : ""), c.text, chipBox);
+        const d = h("div", "chip" + (filter === c.key ? " on" : ""), undefined, chipBox);
+        d.style.setProperty("--chip", c.color);
+        chipIcon(c, d);
+        d.appendChild(document.createTextNode(c.text));
         d.addEventListener("click", function () {
             filter = c.key;
             drawChips();
@@ -3057,7 +3285,8 @@ function drawChips() {
             fetchStatus();    // guidance answers for the new car type right away
         });
     });
-    chipBox.appendChild(sw);   // the switch sits apart from the car-type tabs, at the right
+    h("span", "chip-divider", undefined, chipBox);   // the switch is about the map, not the car
+    chipBox.appendChild(sw);
 }
 
 const searchBox = document.getElementById("search");
@@ -3087,7 +3316,13 @@ searchBox.addEventListener("keydown", function (ev) {
             return;
         }
         // a lot whose name or id starts with the text wins first: "Sage" is the lot, "east" is East Lot
+        // "Lot 41" / "lot 08" names the official lot; a bare number stays a building number (the map's own pins)
+        const lotNumber = /^LOT 0?(\\d+)$/.exec(wanted);
         const lotFirst = zones.find(function (z) {
+            if (lotNumber) {
+                return / LOT 0?(\\d+)$/.test(normalSearch(lotName(z))) &&
+                       normalSearch(lotName(z)).replace(/^.* LOT 0?/, "") === lotNumber[1];
+            }
             return normalSearch(lotName(z)).indexOf(wanted) === 0 || normalSearch(z.id) === wanted;
         });
         if (lotFirst) {
@@ -3130,18 +3365,80 @@ function markBuilding(entry) {
 const scroller = document.getElementById("scroll");
 let zoom = 1;
 
+let fitZoom = null;   // the zoom Fit chose; zooming past it hides the legend (it would cover what you zoomed into)
+let viewPad = 0;      // how far the drawing runs on past the picture on each side, in map pixels
+
 function applyZoom() {
-    svg.setAttribute("width", Math.round(MAP_W * zoom));
+    svg.setAttribute("width", Math.round((MAP_W + 2 * viewPad) * zoom));
     svg.setAttribute("height", Math.round(MAP_H * zoom));
+    document.querySelector(".map-box").classList.toggle("zoomed", fitZoom !== null && zoom > fitZoom + 0.01);
 }
 
+const bleedLayer = el("g", {}, treeLayer);
+
+// why: a wide screen and a near-square campus leave spare width; rather than empty lawn, the streets,
+//      lawn and trees carry on past the picture's edges, so the map fills its box like a real map.
+// boundary: widens the viewBox and extends background, full-length roads and trees; buildings,
+//           lots and pins are untouched.
+// ugly: the extra trees are decoration only; nothing clickable lives in the margins.
+function bleed(pad) {
+    viewPad = pad;
+    svg.setAttribute("viewBox", (-pad) + " 0 " + (MAP_W + 2 * pad) + " " + MAP_H);
+    bgLawn.setAttribute("x", -pad);
+    bgLawn.setAttribute("width", MAP_W + 2 * pad);
+    gateLine.setAttribute("x1", -pad);
+    gateLine.setAttribute("x2", MAP_W + pad);
+    const bands = [];
+    roadLayer.querySelectorAll(".full-road").forEach(function (r) {
+        r.setAttribute("x", -pad);
+        r.setAttribute("width", MAP_W + 2 * pad);
+        bands.push([+r.getAttribute("y") - 14, +r.getAttribute("y") + +r.getAttribute("height") + 14]);
+    });
+    while (bleedLayer.firstChild) {
+        bleedLayer.removeChild(bleedLayer.firstChild);
+    }
+    if (pad < 10) {
+        return;
+    }
+    // a fixed-seed random scatter: looks natural, and the same trees come back on every Fit
+    let seed = 20261012;
+    const rand = function () {
+        seed = (seed * 1664525 + 1013904223) % 4294967296;
+        return seed / 4294967296;
+    };
+    const count = Math.round(2 * pad * MAP_H / 1900);   // about the campus's own tree density
+    for (let i = 0; i < count; i++) {
+        const left = rand() < 0.5;
+        const x = left ? -pad + 8 + rand() * (pad - 16) : MAP_W + 8 + rand() * (pad - 16);
+        const y = rand() * MAP_H;
+        if (bands.some(function (b) { return y > b[0] && y < b[1]; })) {
+            continue;
+        }
+        const r = 8 + (i % 4) * 2;
+        el("circle", { cx: x + 2, cy: y + 3, r: r, fill: "#000000", opacity: 0.1 }, bleedLayer);
+        el("circle", { cx: x, cy: y, r: r, fill: (i % 3 === 0 ? "#7fae6e" : "#8fbb7d") }, bleedLayer);
+    }
+}
+
+// why: the whole campus in view, no scrolling, in whatever box the layout leaves the map.
+// boundary: sets zoom and the drawing's margins; draws nothing else.
+// ugly: on narrow screens (phones) the column sits under the map, so the map fits the width instead.
 function fit() {
-    zoom = Math.max(0.25, Math.min(1.2,
-        Math.min(scroller.clientWidth / MAP_W, scroller.clientHeight / MAP_H)));
+    const bw = scroller.clientWidth, bh = scroller.clientHeight;
+    if (window.innerWidth <= 900) {
+        zoom = Math.max(0.25, Math.min(2.5, bw / MAP_W));
+        bleed(0);
+    } else {
+        zoom = Math.max(0.25, Math.min(2.5, bh / MAP_H, bw / MAP_W));
+        bleed(Math.max(0, (bw / zoom - MAP_W) / 2));
+    }
+    fitZoom = zoom;
     applyZoom();
     scroller.scrollLeft = 0;
     scroller.scrollTop = 0;
 }
+
+window.addEventListener("resize", fit);
 
 document.getElementById("zin").addEventListener("click", function () {
     zoom = Math.min(2.5, zoom + 0.25);
@@ -3209,7 +3506,7 @@ fetchStatus();  // first poll last: it reads the tab (filter), declared above
 </body>
 </html>
 """;
-        String page = part1 + part2;
+        String page = part1 + part2 + part3;
 
         return page.replace("__LAYOUT_JSON__", buildLayoutJson(layout));
     }

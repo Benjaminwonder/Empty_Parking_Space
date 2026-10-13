@@ -123,6 +123,17 @@ def make_handler(run, layout, clock, book):
             now = clock()
             if request.path == "/claim":
                 stall_id = params.get("stall_id", [""])[0]
+                vehicle_class = params.get("vehicle_class", ["regular"])[0]
+                # D4 holds for claims too: a regular car never takes an ADA or EV spot, even by claiming it
+                lot = next((l for l in layout["lots"] if stall_id.startswith(l["lot_id"] + ":")), None)
+                kind = guidance.stall_types(lot).get(stall_id) if lot else None
+                if vehicle_class not in guidance.TIERS:
+                    self._send_json(400, {"code": "bad_vehicle", "message": f"Unknown vehicle_class {vehicle_class!r}."})
+                    return
+                if kind is not None and kind not in guidance.TIERS[vehicle_class]:
+                    self._send_json(409, {"code": "wrong_type",
+                                          "message": f"That is an {kind.upper()} spot. Pick the {kind.upper()} tab if it is for you."})
+                    return
                 try:
                     claim = book.claim(stall_id, driver_id, current_status(run, layout, now), now)
                 except ClaimRefused as refused:
