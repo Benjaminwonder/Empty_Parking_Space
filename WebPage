@@ -1660,6 +1660,7 @@ zones.forEach(function (z) {
     });
     lotPins[z.id] = { shape: g, pin: pin, body: body, box: pillBox, text: pillText, count: pillCount,
                       pave: g.querySelector(".lot-pave"), pill: pill, side: LABEL_SIDE[z.id] || "right",
+                      pillW: 120,   // measured on the first update; placement before that uses this guess
                       markerH: mh };
 });
 
@@ -1851,7 +1852,7 @@ BUILDINGS.forEach(function (b) {
 
     // the name label: landmarks always, every building when the Buildings switch is on
     const landmark = LANDMARKS.indexOf(b.n) >= 0;
-    const label = el("text", { x: px + 20, y: py - 22,
+    const label = el("text", { x: px + 20, y: py - 22, "data-px": px, "data-py": py,
                                "class": "b-label" + (landmark ? " landmark" : "") }, bldgLabelLayer,
                      buildingShort(b.n));
     if (landmark) {
@@ -2203,6 +2204,88 @@ function renderLotList() {
         });
 }
 
+// where a lot's label sits around its pin; "below" goes under the paved area, clear of the pin
+function setPillSide(p, side) {
+    p.side = side;
+    const t = { right: [20, -52], left: [-p.pillW - 20, -52], below: [-p.pillW / 2, p.markerH + 14],
+                above: [-p.pillW / 2, -88] }[side];
+    p.pill.setAttribute("transform", "translate(" + t[0] + " " + t[1] + ")");
+}
+
+// where a landmark's name sits around its pin
+function setNameSide(label, side) {
+    const px = +label.getAttribute("data-px"), py = +label.getAttribute("data-py");
+    const t = { right: [px + 20, py - 22, "start"], left: [px - 20, py - 22, "end"],
+                above: [px, py - 50, "middle"], below: [px, py + 18, "middle"] }[side];
+    label.setAttribute("x", t[0]);
+    label.setAttribute("y", t[1]);
+    label.setAttribute("text-anchor", t[2]);
+    label.dataset.side = side;
+}
+
+function overlapArea(a, b) {
+    const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+    return w > 0 && h > 0 ? w * h : 0;
+}
+
+// why: names are the point of the map, so no label may sit on another name, a pin or another lot's label;
+//      each label tries right, left, below and above its pin and keeps the spot that covers least.
+// boundary: moves lot labels and landmark names only; pins, lots and buildings never move.
+// ugly: a label is only moved when it actually covers something, so counts ticking up and down
+//       don't make labels hop sides every few seconds; off-screen spots count as covering.
+function placeLabels() {
+    const vis = function (e) { return getComputedStyle(e).display !== "none"; };
+    const view = scroller.getBoundingClientRect();
+    const names = buildingNodes.filter(function (e) { return e.landmark; }).map(function (e) { return e.label; });
+    const pins = buildingNodes.filter(function (e) { return vis(e.pin); })
+        .map(function (e) { return e.pin.querySelector("path"); });
+    const lots = Object.keys(lotPins).map(function (k) { return lotPins[k]; })
+        .filter(function (p) { return vis(p.pin); });
+    const cost = function (box, self, others) {
+        let c = 0;
+        others.forEach(function (o) {
+            if (o !== self) {
+                c += overlapArea(box, o.getBoundingClientRect());
+            }
+        });
+        const outside = (box.right - box.left) * (box.bottom - box.top) -
+                        overlapArea(box, view);
+        return c + 4 * outside;
+    };
+    const choose = function (current, sides, apply, measure, self, others) {
+        apply(current);
+        if (cost(measure(), self, others) === 0) {
+            return;
+        }
+        let best = current, bestCost = Infinity;
+        sides.forEach(function (side) {
+            apply(side);
+            const c = cost(measure(), self, others);
+            if (c < bestCost - 1) {
+                best = side;
+                bestCost = c;
+            }
+        });
+        apply(best);
+    };
+    // landmark names first (they avoid pins and each other), then lot labels (they avoid everything)
+    names.forEach(function (label) {
+        const others = pins.concat(names).concat(lots.map(function (p) { return p.body; }));
+        choose(label.dataset.side || "right", ["right", "left", "above", "below"],
+               function (side) { setNameSide(label, side); },
+               function () { return label.getBoundingClientRect(); }, label, others);
+    });
+    lots.forEach(function (p) {
+        const others = pins.concat(names)
+            .concat(lots.map(function (q) { return q.body; }))
+            .concat(lots.filter(function (q) { return q !== p; }).map(function (q) { return q.box; }));
+        choose(p.side, ["right", "left", "below", "above"],
+               function (side) { setPillSide(p, side); },
+               function () { return p.box.getBoundingClientRect(); }, p.box, others);
+    });
+}
+
 function updateLotPins() {
     renderLotList();
     zones.forEach(function (z) {
@@ -2222,14 +2305,11 @@ function updateLotPins() {
         p.pave.style.fill = PIN_HEX[st.cls];
         p.pave.style.fillOpacity = 0.55;
         p.count.textContent = st.label;
-        const pillW = Math.ceil(p.text.getComputedTextLength() + 24);
-        p.box.setAttribute("width", pillW);
-        if (p.side === "left") {
-            p.pill.setAttribute("transform", "translate(" + (-pillW - 20) + " -52)");
-        } else if (p.side === "below") {
-            p.pill.setAttribute("transform", "translate(" + (-pillW / 2) + " " + (p.markerH + 14) + ")");
-        }
+        p.pillW = Math.ceil(p.text.getComputedTextLength() + 24);
+        p.box.setAttribute("width", p.pillW);
+        setPillSide(p, p.side);
     });
+    placeLabels();
 }
 
 // "sage:B-04" -> "Row B · spot 04": drivers read rows and numbers, not our ids
@@ -3436,6 +3516,7 @@ function fit() {
     applyZoom();
     scroller.scrollLeft = 0;
     scroller.scrollTop = 0;
+    placeLabels();   // what is on screen changed (box size, Buildings switch): re-check who covers whom
 }
 
 window.addEventListener("resize", fit);

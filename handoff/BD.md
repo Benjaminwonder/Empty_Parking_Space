@@ -184,3 +184,11 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   checked: 1366×768, 1600×900, 1920×1080 with no scrolling; hover names; switch open/close; list row opens its lot;
            page walk, counted lots, claim buttons, legend fade, two-driver claim with no-show notice.
   → DK: please review; when your live map lands, the stretch is no longer needed (real tiles handle zoom).
+
+2026-10-13 · labels place themselves · edited DK file at the lead's request
+  landed (DK file, by BD): placeLabels() — landmark names, then lot labels, each try right / left / below / above their pin
+          and keep the spot that covers least (names, pins, other labels; off-screen counts as covering). A label only
+          moves when it covers something, so live counts don't make labels hop. Runs after every update and every Fit.
+          Fixed on the way: Flagler's lot label sat on Flagler Hall and Elizabeth Hall; Edmunds Center's on its building;
+          the Elizabeth Hall pin covered the "Flagler Hall" name.
+  checked: 7 overlaps before, 0 after, at 1366×768, 1600×900, 1920×1080; no side changes over 20 s of live updates.
