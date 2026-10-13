@@ -11,16 +11,6 @@ Ideas and features wait here until the team votes. Nothing is built from this fi
 
 ## Ideas
 
-### V-1 · Spot claims with an 8-minute arrival window · BD
-What: first driver to claim a spot gets it; a car must arrive within 8 min (longer for slower-sensor lots); once the spot is seen empty after that, the claim releases.
-Why: two drivers sent to the same spot is the first thing a real user would hit.
-BD: yes
-
-### V-2 · Live location picks the nearest lot · BD
-What: the page asks for location permission; if allowed, it opens the nearest lot with room on arrival. Refused → works as now.
-Why: the driver shouldn't have to know which lot is closest.
-BD: yes
-
 ### V-3 · Real map with real coordinates · DK
 What: replace the hand-drawn campus picture with a live map (map tiles); lots get lat/long in campus.json.
 Why: location, distances and routes are only honest on real coordinates.

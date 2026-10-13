@@ -1097,6 +1097,23 @@ ol.steps li {
     border-radius: 10px;
     margin-left: auto;
 }
+/* counted lots: the stall exists but no sensor watches it alone; neutral, never green */
+.stall.s-counted .stall-rect { fill: #f3f4f6; stroke: #c7ccd3; stroke-dasharray: 4 3; }
+.row-count { font-size: 15px; font-weight: bold; fill: #14532d; }
+.row-count.stale { fill: #6b7280; }
+/* claims: a spot someone holds, and the one this driver holds */
+.stall.s-held .stall-rect { fill: #ddd6fe; stroke: #7c3aed; stroke-width: 2; }
+.stall.s-mine .stall-rect { fill: #1a73e8; stroke: #0b3d91; stroke-width: 3; }
+.stall.s-mine .stall-num, .stall.s-mine .stall-icon { fill: #ffffff; }
+.claim-box { margin: 12px 0; padding: 12px; border-radius: 10px; background: #eef4fe;
+             border: 1px solid #c9dafc; font-size: 14px; }
+.claim-box b { font-size: 16px; }
+.toast { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 50;
+         width: min(440px, calc(100% - 32px)); background: #ffffff; border-radius: 12px;
+         box-shadow: 0 8px 30px rgba(0,0,0,0.3); border-left: 6px solid #d97706; padding: 14px 16px; }
+.toast.hidden { display: none; }
+.toast .t-title { font-weight: bold; font-size: 16px; }
+.toast .t-text { font-size: 13px; color: #444; margin: 4px 0 10px; }
 .stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
 
 </style>
@@ -1177,6 +1194,13 @@ ol.steps li {
     </div>
 
     <div class="side" id="side"></div>
+
+    <!-- one message at a time for things that happen to the driver's claim -->
+    <div class="toast hidden" id="toast">
+        <div class="t-title" id="toastTitle"></div>
+        <div class="t-text" id="toastText"></div>
+        <button class="btn" id="toastOk">OK</button>
+    </div>
 
 </div>
 
@@ -1698,7 +1722,13 @@ function isTaken(s) {
     return s === "occupied" || s === "reserved" || s === "out_of_service";
 }
 
-function statusClass(s) {
+function statusClass(s, id) {
+    if (id !== undefined && myClaim !== null && myClaim.stall_id === id) {
+        return "s-mine";
+    }
+    if (id !== undefined && stallInfo[id] && stallInfo[id].held) {
+        return "s-held";   // someone's claim; we never learn whose
+    }
     if (s === "free") {
         return "s-free";
     }
@@ -1736,6 +1766,7 @@ let liveOk = false;    // did the last fetch succeed?
 let lastAsOf = null;   // as_of from the last good response
 let stallInfo = {};    // id -> the full SK-VIEW stall object (state, age_s, ...)
 let zoneInfo = {};     // id -> the full SK-VIEW zone object (free_count, total_count, ...)
+let rowInfo = {};      // zone id (sage:B) -> that row's own count claim, from status.zones
 
 function formatAge(ageSeconds) {
     if (ageSeconds === undefined || ageSeconds === null) {
@@ -1826,6 +1857,7 @@ function fetchStatus() {
             // each pin's fallback count: status.lots[lot].last_count (hourly zone counts or a
             // gate count), so a lot whose stalls are all unknown still shows "~N/M" and its age
             zoneInfo = {};
+            rowInfo = data.status.zones || {};
             const lots = data.status.lots || {};
             Object.keys(lots).forEach(function (lotId) {
                 if (lots[lotId].last_count) {
@@ -1842,6 +1874,8 @@ function fetchStatus() {
             Object.keys(stallInfo).forEach(function (id) {
                 map[id] = stallInfo[id].state;
             });
+            myClaim = data.my_claim || null;
+            noticeRelease(data.last_release);
             lastAsOf = data.as_of;
             liveOk = true;
             renderTopBar();
@@ -1959,12 +1993,101 @@ function spotName(id) {
     return "Row " + local.split("-")[0] + " · spot " + local.split("-")[1];
 }
 
+let myClaim = null;          // this tab's own claim from SK-VIEW, or null
+let lastReleaseSeen = 0;     // release news already shown, so each one pops up once
+
+const RELEASE_WORDS = {
+    no_show: ["Unresponsive, so spot released",
+              "No car reached {spot} in time, so it went back to other drivers."],
+    no_data: ["Spot released",
+              "The sensor at {spot} went quiet, so we couldn't keep holding it."]
+};
+
+// why: the driver must hear when a claim ends without them, or they drive to a spot that is no longer theirs.
+// boundary: reads last_release from SK-VIEW; shows a message and ends the route; changes no claim.
+// ugly: a quiet release (the car came and later left, or the driver switched/cancelled) shows nothing.
+function noticeRelease(news) {
+    if (!news || news.id <= lastReleaseSeen) {
+        return;
+    }
+    lastReleaseSeen = news.id;
+    const words = RELEASE_WORDS[news.outcome];
+    if (!words) {
+        return;
+    }
+    showToast(words[0], words[1].replace("{spot}", lotName(stalls[news.stall_id].zone) + ", " +
+                                                    spotName(news.stall_id)));
+    if (route !== null && route.id === news.stall_id) {
+        endRoute();
+    }
+}
+
+function showToast(title, text) {
+    document.getElementById("toastTitle").textContent = title;
+    document.getElementById("toastText").textContent = text;
+    document.getElementById("toast").classList.remove("hidden");
+}
+
+document.getElementById("toastOk").addEventListener("click", function () {
+    document.getElementById("toast").classList.add("hidden");
+});
+
+// a spot can be claimed only while a stall sensor sees it free (claims.py says the same, and decides)
+function claimable(id) {
+    const info = stallInfo[id];
+    return !!info && info.state === "free" && !info.held && !countedLot(stalls[id].zone);
+}
+
+// why: the one button that turns "our pick" into "yours": first press wins the spot on the server.
+// boundary: POST /claim; on success starts the route; on refusal explains and lets guidance pick again.
+// ugly: someone else may claim it a second earlier; we say so and move on, we never retry the same spot.
+function claimSpot(id) {
+    fetch(SK_VIEW_URL.replace("/view", "/claim") + "?stall_id=" + encodeURIComponent(id) +
+          "&driver_id=" + encodeURIComponent(DRIVER_ID), { method: "POST" })
+        .then(function (r) {
+            return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+        })
+        .then(function (res) {
+            if (res.ok) {
+                myClaim = res.body.my_claim;
+                route = { id: id, started: false, auto: false };
+                startRoute();
+            } else {
+                showToast("Couldn't claim that spot", res.body.message || "Try another spot.");
+                if (route !== null && route.id === id) {
+                    route = null;
+                    drawMapRoute();
+                }
+            }
+            fetchStatus();
+        })
+        .catch(function () {
+            showToast("Couldn't reach ParkFind", "Your spot was not claimed. Check the connection and try again.");
+        });
+}
+
+function releaseSpot() {
+    fetch(SK_VIEW_URL.replace("/view", "/release") + "?driver_id=" + encodeURIComponent(DRIVER_ID),
+          { method: "POST" })
+        .then(function () {
+            myClaim = null;
+            fetchStatus();
+        });
+}
+
 // why: when guidance names a stall in the open window, preselect it, so the driver sees the best
 //      spot without hunting; it follows the answer on every poll until the driver picks their own.
 // boundary: only moves a route the page chose itself (route.auto); a driver's pick is never overridden.
 // ugly: a started route is never moved, even if its stall is taken meanwhile; claims (next slice) handle that.
 function followAnswer() {
     if (!winOpen || !win || (route !== null && !route.auto)) {
+        return;
+    }
+    if (myClaim !== null && win.lots.some(function (item) { return stalls[myClaim.stall_id].zone === item.z; })) {
+        if (route === null || route.id !== myClaim.stall_id) {
+            route = { id: myClaim.stall_id, started: false, auto: true };  // your held spot comes first
+            drawMapRoute();
+        }
         return;
     }
     let pick = null;
@@ -2398,10 +2521,21 @@ function passes(id) {
     return true;
 }
 
+// why: some sensors count cars (per row, or at the gate) and never see a single stall; those lots
+//      must be drawn as "counted", or a true "9/22 free" pin sits over 22 grey stalls and reads as a lie.
+// boundary: decides from the data on hand: most stalls unknown and a count exists.
+// ugly: counted stalls are still not free; they get their own neutral look, never green.
+function countedLot(z) {
+    const t = lotStats(z);
+    return t.total > 0 && t.unknown > t.total / 2 && zoneInfo[z.id] !== undefined;
+}
+
 function lotDiagram(z, parent) {
+    const counted = countedLot(z);
 
     const x0 = z.x - LOT_PAD - 6;
-    const x1 = z.x + z.w + LOT_PAD + 6;
+    // counted lots get room on the right for each row's "5/8 free"
+    const x1 = z.x + z.w + LOT_PAD + 6 + (counted ? 120 : 0);
     const y0 = LOT_ROAD_Y + ROAD_HALF - 46;
     const y1 = z.y + z.h + LOT_PAD + 6;
 
@@ -2440,7 +2574,8 @@ function lotDiagram(z, parent) {
     z.ids.forEach(function (id) {
         const st = stalls[id];
         const g = el("g", { "class": "stall type-" + st.type.toLowerCase() + " " +
-                                     statusClass(statusOf(id)),
+                                     (counted && statusOf(id) === "unknown" ? "s-counted"
+                                                                            : statusClass(statusOf(id), id)),
                             "data-id": id, "data-zone": z.id, "data-type": st.type }, root);
 
         el("title", {}, g, spotName(id) + (st.type !== "Regular" ? " (" + st.type + ")" : "") +
@@ -2466,6 +2601,27 @@ function lotDiagram(z, parent) {
         });
         nodes[id] = g;
     });
+
+    if (counted) {
+        // each row's own count beside it (hourly row counters); a gate counter has none, only the lot total
+        const rowsSeen = {};
+        z.ids.forEach(function (id) {
+            const st = stalls[id];
+            if (rowsSeen[st.row] === undefined) {
+                rowsSeen[st.row] = st.y + STALL_H / 2;
+            }
+        });
+        Object.keys(rowsSeen).forEach(function (rowId) {
+            const c = rowInfo[rowId];
+            if (!c || c.free_count === undefined) {
+                return;
+            }
+            const fresh = c.state !== "unknown";
+            el("text", { x: z.x + z.w + LOT_PAD + 16, y: rowsSeen[rowId] + 6,
+                         "class": "row-count" + (fresh ? "" : " stale") }, root,
+               (fresh ? "" : "~") + c.free_count + "/" + c.total_count + " free");
+        });
+    }
 
     const routeG = el("g", { "pointer-events": "none" }, root);
     return { svg: root, nodes: nodes, routeG: routeG, x0: x0 };
@@ -2570,6 +2726,19 @@ function lotCard(item) {
     }
 
     const stats = lotStats(z);
+    if (countedLot(z)) {
+        const hasRows = z.rows.some(function (r) { return rowInfo[r.id] && rowInfo[r.id].free_count !== undefined; });
+        h("div", "lot-sub", hasRows
+            ? "Counted row by row every hour. Spots aren't watched one by one, so any spot in a row with room may be free."
+            : "Counted at the gate as cars come and go. Spots aren't watched one by one.", box);
+        renderAnswer(answers[z.id], box);
+        const dgc = lotDiagram(z, box);
+        card.svg = dgc.svg;
+        card.nodes = dgc.nodes;
+        card.routeG = dgc.routeG;
+        card.x0 = dgc.x0;
+        return card;
+    }
     const line = h("div", "stat-line", undefined, box);
     [["free", "#1b8a3a", stats.free], ["taken", "#d62b2b", stats.taken],
      ["unknown", "#6b7280", stats.unknown]].forEach(function (s) {
@@ -2640,12 +2809,13 @@ function refreshSelection() {
         h("div", "foot-main", spotName(route.id) + " · " + lotName(st.zone), info);
         h("div", "foot-sub", route.started
             ? "Route started (solid blue)."
-            : (route.auto ? "Our pick for you, flashing blue. Pick another spot or press Start route."
-                          : "Previewing (flashing blue). Press Start route to begin."), info);
+            : (claimable(route.id)
+                ? "Seen free. Claim it and nobody else is sent here."
+                : "Not seen free right now, so it can't be claimed. You can still see the way."), info);
     }
 
     const legend = h("div", "win-legend", undefined, winFoot);
-    [["Free", "#1b8a3a"], ["Taken", "#d62b2b"], ["Unknown", "#6b7280"]].forEach(function (l) {
+    [["Free", "#1b8a3a"], ["Taken", "#d62b2b"], ["Held", "#a78bfa"], ["Unknown", "#6b7280"], ["Counted, not watched", "#c7ccd3"]].forEach(function (l) {
         const s = h("span", "stat", undefined, legend);
         const dot = h("span", "k", undefined, s);
         dot.style.background = l[1];
@@ -2655,9 +2825,21 @@ function refreshSelection() {
     const cancel = h("button", "btn", "Cancel", winFoot);
     cancel.addEventListener("click", closeWindow);
 
-    const start = h("button", "btn primary", "Start route", winFoot);
-    start.disabled = (route === null || route.started);
-    start.addEventListener("click", startRoute);
+    if (route !== null && myClaim !== null && myClaim.stall_id === route.id) {
+        const rel = h("button", "btn", "Release spot", winFoot);
+        rel.addEventListener("click", releaseSpot);
+        const go = h("button", "btn primary", route.started ? "Route started" : "Start route", winFoot);
+        go.disabled = route.started;
+        go.addEventListener("click", startRoute);
+    } else if (route !== null && claimable(route.id)) {
+        const claimBtn = h("button", "btn primary", "Claim this spot", winFoot);
+        claimBtn.addEventListener("click", function () { claimSpot(route.id); });
+    } else {
+        // not seen free (or counted, or held by someone): the way there can be shown, the spot can't be promised
+        const start = h("button", "btn primary", "Start route", winFoot);
+        start.disabled = (route === null || route.started);
+        start.addEventListener("click", startRoute);
+    }
 }
 
 const side = document.getElementById("side");
@@ -2712,8 +2894,24 @@ function showRoute() {
         h("li", undefined, text, ol);
     });
 
+    if (myClaim !== null && myClaim.stall_id === route.id) {
+        const box = add("div", undefined, "claim-box");
+        if (myClaim.phase === "arrived") {
+            h("b", undefined, "Car detected in your spot", box);
+            h("div", undefined, "It stays yours until the sensor sees it empty again.", box);
+        } else {
+            h("b", undefined, "Held for you until " + campusClock(myClaim.deadline), box);
+            h("div", undefined, "If no car reaches it by then, it goes back to other drivers.", box);
+        }
+        const rel = h("button", "btn", "Release spot", box);
+        rel.addEventListener("click", releaseSpot);
+    }
+
     const age = stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
-    add("div", "Live status: " + statusOf(route.id).replace("_", " ") + (age ? " (" + age + ")" : "") +
+    const mineNow = myClaim !== null && myClaim.stall_id === route.id;
+    // "reserved" is our own hold laid over the sensor; say what the camera itself last saw
+    const seenState = mineNow && stallInfo[route.id] ? stallInfo[route.id].last_claim : statusOf(route.id);
+    add("div", "Live status: " + String(seenState).replace("_", " ") + (age ? " (" + age + ")" : "") +
                ". This shows the way to the spot, it doesn't promise the spot is free.", "status-note");
 
     const show = add("button", "Show lot", "btn");

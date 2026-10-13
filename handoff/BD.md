@@ -94,3 +94,18 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   → DI: please review server.py (events_until) and pull before your next change there.
   → DK: please review WebPage. Pin colours/counts live in lotPinState/updateLotPins, keyed by lot_id, so they carry
         over to the live map you're building. When you do, campus.json needs lat/long per lot; ask BD and we add it together.
+
+2026-10-12 · BD-9 landed (claims) · writes SK-CLAIM · edited DI and DK files at the lead's request
+  landed: parkfind/claims.py — ClaimBook: claim / release / overlay, one lock, in server memory (a restart clears claims).
+          Rules in CONTRACT BD-9. A claim is never an OccupancyEvent and never enters the feed.
+  landed (DI file, by BD): server.py — POST /claim, POST /release, OPTIONS; the view lays claims over status before guidance,
+          and adds my_claim + last_release for the asking driver only.
+  landed (DK file, by BD): "Claim this spot" (only on spots seen free), held spots in purple, your spot in solid blue,
+          "Held for you until 8:13 AM" + Release in the route panel, "Car detected in your spot" once a sensor sees a car,
+          a pop-up "Unresponsive, so spot released" on a no-show; quiet releases (car came and left) show nothing.
+  checked: rule tests (first wins, no_show at exactly +8:00, arrive-then-leave → quiet release, 23 min for 15-minute lots,
+          refusals for occupied / counted / unknown spots); two drivers in two browsers; 8 simultaneous claims → one 200, seven 409.
+  note: the camera can't tell whose car it is; any car in a held spot counts as the driver's arrival (true for real cameras too).
+  demo: run the server with --speed 10 so 8 minutes is 48 seconds.
+  → DI: please review server.py (do_POST, build_view order: status → claims → guidance).
+  → DK: please review WebPage (claimSpot, releaseSpot, noticeRelease, statusClass held/mine).

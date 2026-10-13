@@ -17,6 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from parkfind.clock import make_clock
 from parkfind import guidance
+from parkfind.claims import ClaimBook, ClaimRefused
 from parkfind.lastseen import load_layout, read_feed, status
 
 
@@ -46,35 +47,94 @@ def events_until(feed_path: Path, now):
     return cache["events"][:bisect.bisect_right(cache["times"], now)], cache["rejected"]
 
 
-def build_view(run, layout, clock, vehicle_class, driver_id, lot_id=None):
+def current_status(run, layout, now):
+    """
+    why: One place that turns the feed into status at a moment, shared by views and claims.
+    boundary: Reads validated sensor events and SK-LAYOUT, never simulator truth.
+    ugly: Claims are not in here; they are laid on top by the claim book, never written into the feed.
+    """
+    events, rejected_lines = events_until(run / "feed.jsonl", now)
+    snapshot = status(events, layout, now)
+    snapshot["rejected_lines"] = rejected_lines
+    return snapshot
+
+
+def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None):
     """
     why: Build the current SK-VIEW response for a frontend request.
-    boundary: Reads validated sensor events and SK-LAYOUT, never simulator truth.
+    boundary: Sensor status first, then claims on top, then guidance, so guidance never names a held spot.
     ugly: answer is null until the page names a lot (nearest to the driver, or a clicked pin).
     """
     now = clock()
-    events, rejected_lines = events_until(run / "feed.jsonl", now)
+    snapshot = current_status(run, layout, now)
+    claim_news = book.overlay(snapshot, now, driver_id)
 
-    current_status = status(events, layout, now)
-    current_status["rejected_lines"] = rejected_lines
-
-    answer = guidance.answer(current_status, layout, now, vehicle_class, driver_id, lot_id)
+    answer = guidance.answer(snapshot, layout, now, vehicle_class, driver_id, lot_id)
 
     return {
-        "as_of": current_status["as_of"],
-        "status": current_status,
+        "as_of": snapshot["as_of"],
+        "status": snapshot,
         "answer": answer,
+        "my_claim": claim_news["my_claim"],
+        "last_release": claim_news["last_release"],
     }
 
 
-def make_handler(run, layout, clock):
+PAGE_ORIGIN = "http://localhost:8085"
+
+
+def make_handler(run, layout, clock, book):
     """
-    why: Bind the selected feed, layout and clock to each HTTP request.
-    boundary: Exposes only SK-VIEW through GET /view.
+    why: Bind the selected feed, layout, clock and claim book to each HTTP request.
+    boundary: GET /view (SK-VIEW), POST /claim and POST /release (SK-CLAIM). Nothing else.
     ugly: a bad vehicle_class or lot_id is a 400, never a guess at what was meant.
     """
 
     class ParkFindHandler(BaseHTTPRequestHandler):
+        def _send_json(self, code, body):
+            payload = json.dumps(body).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", PAGE_ORIGIN)
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_OPTIONS(self):
+            """
+            why: Browsers may ask before a cross-origin POST; answer yes for the page's origin only.
+            boundary: Headers only, no body, no state.
+            ugly: Our POSTs carry no body or custom headers, so most browsers never ask; this is the fallback.
+            """
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", PAGE_ORIGIN)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.end_headers()
+
+        def do_POST(self):
+            """
+            why: A driver claims a spot or lets go of one.
+            boundary: Changes only the claim book; the feed and the sensors' status are never written.
+            ugly: Two drivers can press Claim at the same instant; the book's lock lets exactly one win, the other gets 409.
+            """
+            request = urlsplit(self.path)
+            params = parse_qs(request.query)
+            driver_id = params.get("driver_id", [""])[0]
+            now = clock()
+            if request.path == "/claim":
+                stall_id = params.get("stall_id", [""])[0]
+                try:
+                    claim = book.claim(stall_id, driver_id, current_status(run, layout, now), now)
+                except ClaimRefused as refused:
+                    self._send_json(409, {"code": refused.code, "message": refused.message})
+                    return
+                self._send_json(200, {"my_claim": claim})
+            elif request.path == "/release":
+                book.release(driver_id, now)
+                self._send_json(200, {"my_claim": None})
+            else:
+                self.send_error(404, "Not found")
+
         def do_GET(self):
             """
             why: Serve a fresh parking snapshot when the frontend requests it.
@@ -93,18 +153,11 @@ def make_handler(run, layout, clock):
             lot_id = params.get("lot_id", [None])[0]
 
             try:
-                view = build_view(run, layout, clock, vehicle_class, driver_id, lot_id)
+                view = build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id)
             except ValueError as problem:  # unknown vehicle_class or lot_id: the caller's mistake, not ours
                 self.send_error(400, str(problem))
                 return
-            payload = json.dumps(view).encode("utf-8")
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(payload)))
-            self.send_header("Access-Control-Allow-Origin", "http://localhost:8085")
-            self.end_headers()
-            self.wfile.write(payload)
+            self._send_json(200, view)
 
     return ParkFindHandler
 
@@ -151,7 +204,7 @@ def main():
     start = args.now or first_observed(args.run / "feed.jsonl")
     clock = make_clock(start=start, speed=args.speed)
     print(f"Replay starts at {start}, speed {args.speed}", flush=True)
-    handler = make_handler(args.run, layout, clock)
+    handler = make_handler(args.run, layout, clock, ClaimBook())
 
     server = ThreadingHTTPServer(("localhost", args.port), handler)
 
