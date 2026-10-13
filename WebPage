@@ -1114,6 +1114,20 @@ ol.steps li {
 .toast.hidden { display: none; }
 .toast .t-title { font-weight: bold; font-size: 16px; }
 .toast .t-text { font-size: 13px; color: #444; margin: 4px 0 10px; }
+/* buildings: quiet by default so the lot pins lead; the Buildings switch brings them all forward */
+.b-label { display: none; font-size: 17px; font-weight: bold; fill: #374151; stroke: #ffffff;
+           stroke-width: 4px; paint-order: stroke; pointer-events: none; }
+.b-label.landmark { display: inline; }
+.bpin { opacity: 0.45; }
+.bpin.landmark { opacity: 0.9; }
+body.show-buildings .b-label { display: inline; }
+body.show-buildings .bpin { opacity: 1; }
+.bkey.hidden { display: none; }
+.bkey-list { grid-template-columns: 1fr; }
+.key-group { font-size: 11px; font-weight: bold; color: #6b7280; text-transform: uppercase;
+             letter-spacing: 0.5px; margin: 8px 0 2px; }
+.chip.toggle { margin-left: auto; }
+.chip.toggle.on { background: #374151; border-color: #374151; }
 .stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
 
 </style>
@@ -1128,7 +1142,7 @@ ol.steps li {
         <div class="logo">ParkFind</div>
 
         <input id="search" class="search"
-               placeholder="Search a lot or a spot (e.g. Sage, or Sage B-04)">
+               placeholder="Search a building, lot or spot (e.g. CUB, Sage, Sage B-04)">
 
         <div class="updated" id="updated">
             <span class="dot" id="updatedDot"></span>
@@ -1186,9 +1200,9 @@ ol.steps li {
         </div>
 
         <!-- the building key, always visible under the close-up -->
-        <div class="bkey">
+        <div class="bkey hidden" id="bkey">
             <div class="bkey-title">Buildings</div>
-            <div class="bkey-sub">Numbers match the campus map. Click one to see nearby parking.</div>
+            <div class="bkey-sub">Official names (Stetson campus map, Aug 2026). Click one for the closest parking.</div>
             <div class="bkey-list" id="buildingKeyList"></div>
         </div>
     </div>
@@ -1525,108 +1539,162 @@ zones.forEach(function (z) {
         ev.stopPropagation();
         openForLot(z);
     });
-    lotPins[z.id] = { shape: g, pin: pin, body: body, box: pillBox, text: pillText, count: pillCount };
+    lotPins[z.id] = { shape: g, pin: pin, body: body, box: pillBox, text: pillText, count: pillCount,
+                      pave: g.querySelector(".lot-pave") };
 });
 
 // lot pins go on top of building pins: the live count is what a driver came for
 function raiseLotPins() {
+    pinLayer.appendChild(bldgLabelLayer);   // names over building pins, lot pins over everything
     Object.keys(lotPins).forEach(function (id) {
         pinLayer.appendChild(lotPins[id].pin);
     });
 }
 
 // ---------- the buildings ----------
-// DK note: positions below are read off the real map (grid-by-grid), not
-// invented. Pin numbers match the real numbered pins so they're easy to
-// check against the map image. Most are drawn as a single small square,
-// since the real map doesn't show exact wall footprints for every building -
-// only the handful of large, clearly-outlined buildings get bigger rectangles.
-// If a specific number still looks off, it just needs nudging - tell DK which one.
+// Numbers, names and categories follow Stetson's official DeLand campus map, edition of
+// 7 Aug 2026 (stetson.edu/maps, deland-campus-map.pdf). Checked by BD on 2026-10-12 by fitting
+// every pin on that PDF to these positions: DK's old #42 was the P42 lot label (it is #18),
+// #48/#49/#52/#54 were moved, #42 Nemec Hall and #59 Hulley Tower added, colours now follow the
+// map's own categories. Off-map facilities (#43, #66, #69, #71, #72) are left off on purpose.
+// Positions are picture units, read off the map; a building is a small square unless its
+// outline is large and clear on the map.
 const BUILDINGS = [
-    { n: 1,  c: "navy",  parts: [[142, 405, 18, 14]] },
-    { n: 2,  c: "navy",  parts: [[298, 445, 14, 14]] },
-    { n: 3,  c: "navy",  parts: [[160, 330, 16, 14]] },
-    { n: 4,  c: "navy",  parts: [[85, 445, 60, 20]] },
-    { n: 5,  c: "navy",  parts: [[255, 445, 50, 24]] },
-    { n: 6,  c: "navy",  parts: [[185, 448, 36, 30]] },
-    { n: 7,  c: "navy",  parts: [[285, 480, 14, 14]] },
-    { n: 8,  c: "navy",  parts: [[135, 450, 32, 22]] },
-    { n: 9,  c: "navy",  parts: [[360, 558, 16, 14]] },
-    { n: 10, c: "navy",  parts: [[240, 470, 28, 20]] },
-    { n: 11, c: "navy",  parts: [[365, 585, 14, 14]] },
-    { n: 12, c: "navy",  parts: [[190, 562, 30, 22]] },
-    { n: 13, c: "navy",  parts: [[187, 505, 26, 24]] },
-    { n: 14, c: "navy",  parts: [[140, 298, 30, 20]] },
-    { n: 15, c: "navy",  parts: [[322, 615, 14, 14]] },
-    { n: 16, c: "navy",  parts: [[193, 512, 24, 22]] },
-    { n: 17, c: "navy",  parts: [[340, 558, 14, 14]] },
-    { n: 19, c: "navy",  parts: [[320, 435, 22, 26]] },
-    { n: 20, c: "navy",  parts: [[203, 470, 20, 18]] },
-    { n: 21, c: "navy",  parts: [[355, 448, 14, 14]] },
-    { n: 22, c: "green", parts: [[322, 310, 14, 14]] },
-    { n: 23, c: "navy",  parts: [[185, 350, 14, 14]] },
-    { n: 24, c: "green", parts: [[295, 390, 14, 14]] },
-    { n: 25, c: "navy",  parts: [[185, 255, 14, 14]] },
-    { n: 26, c: "green", parts: [[420, 448, 14, 14]] },
-    { n: 27, c: "green", parts: [[450, 510, 20, 20]] },
-    { n: 28, c: "green", parts: [[348, 466, 14, 14]] },
-    { n: 29, c: "navy",  parts: [[287, 115, 14, 14]] },
-    { n: 30, c: "navy",  parts: [[382, 100, 14, 14]] },
-    { n: 31, c: "navy",  parts: [[357, 132, 14, 14]] },
-    { n: 32, c: "navy",  parts: [[385, 162, 14, 14]] },
-    { n: 33, c: "navy",  parts: [[345, 200, 14, 14]] },
-    { n: 34, c: "navy",  parts: [[347, 225, 14, 14]] },
-    { n: 35, c: "green", parts: [[350, 348, 14, 14]] },
-    { n: 36, c: "navy",  parts: [[322, 401, 14, 14]] },
-    { n: 37, c: "navy",  parts: [[347, 383, 14, 14]] },
-    { n: 38, c: "navy",  parts: [[345, 413, 14, 14]] },
-    { n: 39, c: "navy",  parts: [[377, 388, 14, 14]] },
-    { n: 40, c: "green", parts: [[372, 408, 14, 14]] },
-    { n: 41, c: "green", parts: [[382, 227, 14, 14]] },
-    { n: 42, c: "maroon",parts: [[380, 530, 18, 16]] },
-    { n: 44, c: "navy",  parts: [[352, 48, 20, 18]] },
-    { n: 45, c: "green", parts: [[252, 45, 36, 20]] },
-    { n: 46, c: "green", parts: [[147, 237, 18, 16]] },
-    { n: 47, c: "green", parts: [[517, 563, 16, 16]] },
-    { n: 48, c: "navy",  parts: [[612, 565, 14, 14]] },
-    { n: 49, c: "navy",  parts: [[635, 548, 14, 14]] },
-    { n: 50, c: "navy",  parts: [[618, 528, 14, 14]] },
-    { n: 51, c: "maroon",parts: [[595, 528, 14, 14]] },
-    { n: 52, c: "navy",  parts: [[600, 548, 14, 14]] },
-    { n: 53, c: "navy",  parts: [[150, 378, 14, 14]] },
-    { n: 54, c: "lblue", parts: [[262, 310, 55, 65]] },
-    { n: 55, c: "navy",  parts: [[250, 528, 16, 16]] },
-    { n: 56, c: "navy",  parts: [[382, 280, 14, 14]] },
-    { n: 57, c: "lblue", parts: [[222, 275, 30, 28]] },
-    { n: 58, c: "lblue", parts: [[282, 285, 40, 34]] },
-    { n: 60, c: "navy",  parts: [[232, 408, 14, 14]] },
-    { n: 61, c: "navy",  parts: [[427, 528, 14, 14]] },
-    { n: 62, c: "navy",  parts: [[72, 330, 22, 20]] },
-    { n: 63, c: "lblue", parts: [[100, 332, 38, 26]] },
-    { n: 64, c: "maroon",parts: [[466, 383, 36, 40]] },
-    { n: 65, c: "maroon",parts: [[545, 443, 22, 18]] },
-    { n: 67, c: "maroon",parts: [[260, 170, 46, 36]] },
-    { n: 68, c: "maroon",parts: [[495, 330, 40, 28]] },
-    { n: 70, c: "maroon",parts: [[543, 505, 44, 40]] },
-    { n: 73, c: "maroon",parts: [[220, 175, 22, 18]] },
-    { n: 74, c: "navy",  parts: [[360, 638, 30, 20]] },
-    { n: 75, c: "navy",  parts: [[195, 413, 24, 16]] },
-    { n: 76, c: "navy",  parts: [[328, 510, 14, 14]] },
-    { n: 77, c: "lblue", parts: [[293, 528, 26, 22]] },
-    { n: 78, c: "lblue", parts: [[573, 452, 38, 34]] },
-    { n: 79, c: "navy",  parts: [[310, 481, 14, 14]] },
-    { n: 80, c: "navy",  parts: [[125, 500, 20, 18]] }
+    { n: 1 , c: "academic", parts: [[142, 405, 18, 14]] },
+    { n: 2 , c: "academic", parts: [[298, 445, 14, 14]] },
+    { n: 3 , c: "academic", parts: [[160, 330, 16, 14]] },
+    { n: 4 , c: "academic", parts: [[85, 445, 60, 20]] },
+    { n: 5 , c: "academic", parts: [[255, 445, 50, 24]] },
+    { n: 6 , c: "academic", parts: [[185, 448, 36, 30]] },
+    { n: 7 , c: "academic", parts: [[285, 480, 14, 14]] },
+    { n: 8 , c: "academic", parts: [[135, 450, 32, 22]] },
+    { n: 9 , c: "academic", parts: [[360, 558, 16, 14]] },
+    { n: 10, c: "academic", parts: [[240, 470, 28, 20]] },
+    { n: 11, c: "academic", parts: [[365, 585, 14, 14]] },
+    { n: 12, c: "academic", parts: [[190, 562, 30, 22]] },
+    { n: 13, c: "academic", parts: [[187, 505, 26, 24]] },
+    { n: 14, c: "academic", parts: [[140, 298, 30, 20]] },
+    { n: 15, c: "academic", parts: [[322, 615, 14, 14]] },
+    { n: 16, c: "academic", parts: [[193, 512, 24, 22]] },
+    { n: 17, c: "academic", parts: [[340, 558, 14, 14]] },
+    { n: 18, c: "academic", parts: [[380, 530, 18, 16]] },
+    { n: 19, c: "academic", parts: [[320, 435, 22, 26]] },
+    { n: 20, c: "academic", parts: [[203, 470, 20, 18]] },
+    { n: 21, c: "residential", parts: [[355, 448, 14, 14]] },
+    { n: 22, c: "residential", parts: [[322, 310, 14, 14]] },
+    { n: 23, c: "residential", parts: [[185, 350, 14, 14]] },
+    { n: 24, c: "residential", parts: [[295, 390, 14, 14]] },
+    { n: 25, c: "residential", parts: [[185, 255, 14, 14]] },
+    { n: 26, c: "residential", parts: [[420, 448, 14, 14]] },
+    { n: 27, c: "residential", parts: [[450, 510, 20, 20]] },
+    { n: 28, c: "residential", parts: [[348, 466, 14, 14]] },
+    { n: 29, c: "residential", parts: [[287, 115, 14, 14]] },
+    { n: 30, c: "residential", parts: [[382, 100, 14, 14]] },
+    { n: 31, c: "residential", parts: [[357, 132, 14, 14]] },
+    { n: 32, c: "residential", parts: [[385, 162, 14, 14]] },
+    { n: 33, c: "residential", parts: [[345, 200, 14, 14]] },
+    { n: 34, c: "residential", parts: [[347, 225, 14, 14]] },
+    { n: 35, c: "residential", parts: [[350, 348, 14, 14]] },
+    { n: 36, c: "residential", parts: [[322, 401, 14, 14]] },
+    { n: 37, c: "residential", parts: [[347, 383, 14, 14]] },
+    { n: 38, c: "residential", parts: [[345, 413, 14, 14]] },
+    { n: 39, c: "residential", parts: [[377, 388, 14, 14]] },
+    { n: 40, c: "residential", parts: [[372, 408, 14, 14]] },
+    { n: 41, c: "residential", parts: [[382, 227, 14, 14]] },
+    { n: 42, c: "residential", parts: [[528, 519, 14, 14]] },
+    { n: 44, c: "residential", parts: [[352, 48, 20, 18]] },
+    { n: 45, c: "residential", parts: [[252, 45, 36, 20]] },
+    { n: 46, c: "residential", parts: [[147, 237, 18, 16]] },
+    { n: 47, c: "residential", parts: [[517, 563, 16, 16]] },
+    { n: 48, c: "residential", parts: [[564, 581, 14, 14]] },
+    { n: 49, c: "residential", parts: [[616, 570, 14, 14]] },
+    { n: 50, c: "residential", parts: [[618, 528, 14, 14]] },
+    { n: 51, c: "residential", parts: [[595, 528, 14, 14]] },
+    { n: 52, c: "residential", parts: [[545, 575, 14, 14]] },
+    { n: 53, c: "studentlife", parts: [[150, 378, 14, 14]] },
+    { n: 54, c: "studentlife", parts: [[242, 354, 55, 50]] },
+    { n: 55, c: "studentlife", parts: [[250, 528, 16, 16]] },
+    { n: 56, c: "studentlife", parts: [[382, 280, 14, 14]] },
+    { n: 57, c: "studentlife", parts: [[222, 275, 30, 28]] },
+    { n: 58, c: "studentlife", parts: [[282, 285, 40, 34]] },
+    { n: 59, c: "studentlife", parts: [[191, 381, 14, 14]] },
+    { n: 60, c: "studentlife", parts: [[232, 408, 14, 14]] },
+    { n: 61, c: "studentlife", parts: [[427, 528, 14, 14]] },
+    { n: 62, c: "studentlife", parts: [[72, 330, 22, 20]] },
+    { n: 63, c: "studentlife", parts: [[100, 332, 38, 26]] },
+    { n: 64, c: "athletics", parts: [[466, 383, 36, 40]] },
+    { n: 65, c: "athletics", parts: [[545, 443, 22, 18]] },
+    { n: 67, c: "athletics", parts: [[260, 170, 46, 36]] },
+    { n: 68, c: "athletics", parts: [[495, 330, 40, 28]] },
+    { n: 70, c: "athletics", parts: [[543, 505, 44, 40]] },
+    { n: 73, c: "athletics", parts: [[220, 175, 22, 18]] },
+    { n: 74, c: "offices", parts: [[360, 638, 30, 20]] },
+    { n: 75, c: "offices", parts: [[195, 413, 24, 16]] },
+    { n: 76, c: "offices", parts: [[328, 510, 14, 14]] },
+    { n: 77, c: "offices", parts: [[293, 528, 26, 22]] },
+    { n: 78, c: "offices", parts: [[573, 452, 38, 34]] },
+    { n: 79, c: "offices", parts: [[310, 481, 14, 14]] },
+    { n: 80, c: "offices", parts: [[125, 500, 20, 18]] }
 ];
 
-const PIN_COLORS = { navy: "#2a2d8f", green: "#3f8f2e", maroon: "#7a1f1f", lblue: "#3f8fb0" };
+// official directory names; "short" is what the map label shows, the full name is everywhere else
+const BUILDING_NAMES = {
+    1: ["Allen Hall"], 2: ["Brown Hall"], 3: ["Cummings Gym"], 4: ["Davis Hall"],
+    5: ["duPont-Ball Library", "Library"], 6: ["Elizabeth Hall"], 7: ["Elsewhere Studio"],
+    8: ["Flagler Hall"], 9: ["Gillespie Museum"], 10: ["Hand Art Center"],
+    11: ["La Casa Cultural Latina"], 12: ["Lynn Business Center", "LBC"], 13: ["McMahan Hall"],
+    14: ["Museum of Art \u2013 DeLand", "Museum of Art"], 15: ["Ohio Art Studio"], 16: ["Presser Hall"],
+    17: ["Rinker Environmental Learning Center", "RELC"],
+    18: ["Russian, East European and Eurasian Studies", "REEES"],
+    19: ["Sage Science Center", "Sage"], 20: ["Sampson Hall"],
+    21: ["Carson Hall"], 22: ["Lynn Hall (Law Ready)", "Lynn Hall"], 23: ["Chaudoin Hall (Honors)", "Chaudoin"],
+    24: ["Conrad Hall (Bonner)", "Conrad Hall"], 25: ["Emily Hall"], 26: ["Gordis Hall"],
+    27: ["Hatter Hall"], 28: ["Hollis Hall"], 29: ["Delta Sigma Phi House"], 30: ["Pi Kappa Alpha House"],
+    31: ["Phi Sigma Kappa House"], 32: ["Pi Kappa Phi House"], 33: ["Sigma Phi Epsilon House"],
+    34: ["Lambda Chi Alpha House"], 35: ["Pi Beta Phi House"], 36: ["Kappa Alpha Theta House"],
+    37: ["Alpha Xi Delta House"], 38: ["Alpha Chi Omega House"], 39: ["Zeta Tau Alpha House"],
+    40: ["Delta Delta Delta House"], 41: ["Alpha Tau Omega House"], 42: ["Nemec Hall"],
+    44: ["Stetson Oaks Apts."], 45: ["Stetson Palms Apts."], 46: ["University Hall"],
+    47: ["UVA 100 \u2013 Maxcy Hall", "Maxcy Hall"], 48: ["UVA 200 \u2013 Hon Hall", "Hon Hall"],
+    49: ["UVA 300 \u2013 Building 300", "UVA 300"], 50: ["UVA 400 \u2013 E.M. Lynn Hall", "E.M. Lynn Hall"],
+    51: ["UVA 500 \u2013 Rinker Hall", "Rinker Hall"], 52: ["UVA \u2013 Rinker Clubhouse", "Rinker Clubhouse"],
+    53: ["Allen House"], 54: ["Carlton Union Building (CUB)", "CUB"], 55: ["Cross-Cultural Center (Tri-C)", "Tri-C"],
+    56: ["Ginsburg Hillel House"], 57: ["Griffith Hall"], 58: ["Hollis Center"], 59: ["Hulley Tower"],
+    60: ["Rinker Welcome Center"], 61: ["Public Safety"], 62: ["Racquetball Courts"],
+    63: ["Recreation Tennis/Pickleball Courts", "Tennis Courts"],
+    64: ["Athletics Training Center"], 65: ["Cooper Beach Volleyball Courts", "Beach Volleyball"],
+    67: ["J. Ollie Edmunds Center", "Edmunds Center"], 68: ["Mandy Stoll Tennis Center", "Tennis Center"],
+    70: ["Patricia Wilson Softball Field", "Softball Field"], 73: ["Wilson Athletic Center"],
+    74: ["Administrative Services"], 75: ["DeLand Hall"], 76: ["Development"], 77: ["Donor Relations"],
+    78: ["Facilities Management"], 79: ["Meadows Alumni House"], 80: ["President\u2019s Home"]
+};
+
+// the few names shown before the driver asks for more: places people navigate by and arrive at
+const LANDMARKS = [5, 6, 8, 12, 19, 54, 58, 60, 67, 74];
+
+const CATEGORY_NAMES = { academic: "Academic", residential: "Residential", studentlife: "Student life",
+                         athletics: "Athletics & recreation", offices: "Administrative offices" };
+
+const PIN_COLORS = { academic: "#2a2d8f", residential: "#3f8f2e", studentlife: "#3f8fb0",
+                     athletics: "#7a1f1f", offices: "#5b6b7a" };
 const ROOFS = ["#bdb3a3", "#a98b78", "#b8bcc2"];
 
 const buildingNodes = [];
 
+const bldgLabelLayer = el("g", {}, pinLayer);   // names sit above pins, under the lot pins (raised later)
+
+function buildingName(n) {
+    return BUILDING_NAMES[n] ? BUILDING_NAMES[n][0] : "Building " + n;
+}
+
+function buildingShort(n) {
+    return BUILDING_NAMES[n] ? (BUILDING_NAMES[n][1] || BUILDING_NAMES[n][0]) : String(n);
+}
+
 BUILDINGS.forEach(function (b) {
 
     const g = el("g", { "class": "building" }, bldgLayer);
-    el("title", {}, g, "Building " + b.n + " · click to see the closest parking");
+    el("title", {}, g, b.n + " \u00b7 " + buildingName(b.n) + " \u00b7 click to see the closest parking");
 
     b.parts.forEach(function (p) {
         el("rect", { x: p[0] * S + 4, y: p[1] * S + 6, width: p[2] * S, height: p[3] * S,
@@ -1644,8 +1712,8 @@ BUILDINGS.forEach(function (b) {
     const top = b.parts[0];
     const px = (top[0] + top[2] / 2) * S;
     const py = top[1] * S + 8;
-    const pin = el("g", { "class": "pin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
-    el("title", {}, pin, "Building " + b.n + " · click to see the closest parking");
+    const pin = el("g", { "class": "pin bpin", transform: "translate(" + px + " " + py + ")" }, pinLayer);
+    el("title", {}, pin, b.n + " \u00b7 " + buildingName(b.n) + " \u00b7 click to see the closest parking");
     el("path", { d: "M0 0 C-9 -12 -17 -19 -17 -30 A17 17 0 1 1 17 -30 C17 -19 9 -12 0 0 Z",
                  fill: PIN_COLORS[b.c], "class": "pin-body" }, pin);
     el("text", { x: 0, y: -24, "class": "pin-num" }, pin, String(b.n));
@@ -1658,7 +1726,17 @@ BUILDINGS.forEach(function (b) {
         maxY = Math.max(maxY, q[1] + q[3]);
     });
 
-    const entry = { name: "Building " + b.n, n: b.n, color: b.c, node: g, pin: pin,
+    // the name label: landmarks always, every building when the Buildings switch is on
+    const landmark = LANDMARKS.indexOf(b.n) >= 0;
+    const label = el("text", { x: px + 20, y: py - 22,
+                               "class": "b-label" + (landmark ? " landmark" : "") }, bldgLabelLayer,
+                     buildingShort(b.n));
+    if (landmark) {
+        pin.classList.add("landmark");
+    }
+
+    const entry = { name: buildingName(b.n), short: buildingShort(b.n), n: b.n, color: b.c, node: g,
+                    pin: pin, label: label, landmark: landmark,
                     cx: (minX + maxX) / 2 * S, cy: (minY + maxY) / 2 * S };
     buildingNodes.push(entry);
 
@@ -1670,19 +1748,20 @@ BUILDINGS.forEach(function (b) {
     pin.addEventListener("click", pick);
 });
 
-// DK note: the real map only has numbers on its pins - there's no name
-// directory in the screenshot I was given, so this key can only say
-// "Building N" for each one, not what it actually is. If Benjamin or
-// Dayspring can grab Stetson's building-name list, swap it in here.
+// The directory (shown with the Buildings switch): the official names, grouped like the map's own
+// directory. Clicking one does what clicking the building does: the two closest lots.
 buildingNodes.sort(function (a, b) { return a.n - b.n; });
 const keyList = document.getElementById("buildingKeyList");
-buildingNodes.forEach(function (entry) {
-    const row = h("div", "key-row", undefined, keyList);
-    const dot = h("span", "key-dot", undefined, row);
-    dot.style.background = PIN_COLORS[entry.color];
-    row.appendChild(document.createTextNode("Building " + entry.n));
-    row.addEventListener("click", function () {
-        openForBuilding(entry);
+Object.keys(CATEGORY_NAMES).forEach(function (cat) {
+    h("div", "key-group", CATEGORY_NAMES[cat], keyList);
+    buildingNodes.filter(function (e) { return e.color === cat; }).forEach(function (entry) {
+        const row = h("div", "key-row", undefined, keyList);
+        const dot = h("span", "key-dot", undefined, row);
+        dot.style.background = PIN_COLORS[entry.color];
+        row.appendChild(document.createTextNode(entry.n + "  " + entry.name));
+        row.addEventListener("click", function () {
+            openForBuilding(entry);
+        });
     });
 });
 
@@ -1982,6 +2061,9 @@ function updateLotPins() {
             return;
         }
         p.body.setAttribute("class", "lot-pin-body " + st.cls);
+        // the paved area takes the pin's colour, so lots are found by eye before any label is read
+        p.pave.style.fill = PIN_HEX[st.cls];
+        p.pave.style.fillOpacity = 0.55;
         p.count.textContent = st.label;
         p.box.setAttribute("width", Math.ceil(p.text.getComputedTextLength() + 24));
     });
@@ -2868,7 +2950,8 @@ function showHelp() {
         return;
     }
 
-    add("div", "Click a P pin to open that lot, or a building to see the lots closest to it.", "sub");
+    add("div", "Click a P pin to open that lot, or a building to see the lots closest to it. " +
+               "The Buildings switch at the top shows every building's name.", "sub");
     add("div", "Each pin's colour and count update every few seconds. Grey means our newest " +
                "data is too old to trust. You can also search for a lot or a spot " +
                "(like Sage, or Sage B-04) and press Enter.", "status-note");
@@ -2943,10 +3026,20 @@ const chipNames = [
 
 const chipBox = document.getElementById("chips");
 
+let showBuildings = false;   // the Buildings switch: every name and the directory, or landmarks only
+
 function drawChips() {
     while (chipBox.firstChild) {
         chipBox.removeChild(chipBox.firstChild);
     }
+    const sw = h("div", "chip toggle" + (showBuildings ? " on" : ""),
+                 showBuildings ? "Buildings: all names" : "Buildings: landmarks only", undefined);
+    sw.addEventListener("click", function () {
+        showBuildings = !showBuildings;
+        document.body.classList.toggle("show-buildings", showBuildings);
+        document.getElementById("bkey").classList.toggle("hidden", !showBuildings);
+        drawChips();
+    });
     chipNames.forEach(function (c) {
         const d = h("div", "chip" + (filter === c.key ? " on" : ""), c.text, chipBox);
         d.addEventListener("click", function () {
@@ -2964,6 +3057,7 @@ function drawChips() {
             fetchStatus();    // guidance answers for the new car type right away
         });
     });
+    chipBox.appendChild(sw);   // the switch sits apart from the car-type tabs, at the right
 }
 
 const searchBox = document.getElementById("search");
@@ -2990,6 +3084,26 @@ searchBox.addEventListener("keydown", function (ev) {
         if (hit) {
             query = "";
             openForStall(hit);
+            return;
+        }
+        // a lot whose name or id starts with the text wins first: "Sage" is the lot, "east" is East Lot
+        const lotFirst = zones.find(function (z) {
+            return normalSearch(lotName(z)).indexOf(wanted) === 0 || normalSearch(z.id) === wanted;
+        });
+        if (lotFirst) {
+            query = "";
+            openForLot(lotFirst);
+            return;
+        }
+        // then a building by number ("54"), short name ("CUB") or full name ("Flagler"): its closest lots
+        const bld = buildingNodes.find(function (e) {
+            return String(e.n) === wanted || normalSearch(e.short) === wanted;
+        }) || buildingNodes.find(function (e) {
+            return normalSearch(e.name).indexOf(wanted) >= 0;
+        });
+        if (bld) {
+            query = "";
+            openForBuilding(bld);
             return;
         }
         // not a spot: the first lot whose name or id contains the text

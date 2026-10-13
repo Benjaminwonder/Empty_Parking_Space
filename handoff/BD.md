@@ -109,3 +109,19 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   demo: run the server with --speed 10 so 8 minutes is 48 seconds.
   → DI: please review server.py (do_POST, build_view order: status → claims → guidance).
   → DK: please review WebPage (claimSpot, releaseSpot, noticeRelease, statusClass held/mine).
+
+2026-10-12 · building names from the official map · edited DK file at the lead's request
+  source: Stetson's DeLand campus map, edition of 7 Aug 2026 (stetson.edu/maps, deland-campus-map.pdf), kept locally in
+          data/stetson_map/ (gitignored). It has 80 numbered buildings; DK's 1–80 numbering matches it.
+  checked: every pin on the PDF fitted to DK's positions (median miss ~8 picture units). Corrections made:
+          DK's old #42 was the P42 parking-lot label → it is #18 (Russian, East European and Eurasian Studies);
+          #42 Nemec Hall and #59 Hulley Tower added; #48, #49, #52 (University Village) and #54 (CUB) moved;
+          colours now follow the map's categories (academic, residential, student life, athletics, offices).
+          #43, #66, #69, #71, #72 are off-campus arrows on the map and are left off.
+  landed (DK file, by BD): every building has its official name; the "Building 1–41" list is gone; a Buildings switch at the
+          top shows all names + a directory grouped by category (off by default: 10 landmark names, other pins dimmed);
+          search takes buildings ("CUB", "Flagler", "54"), lots win when the text starts a lot's name ("Sage", "east");
+          lot areas are tinted with their pin's colour.
+  note: the page's second text block is ~53 KB of Java's 64 KB limit per string; the next big addition needs a part3.
+  → DK: please review. The official map also shows Stetson's real parking lots (P01–P54, typed commuter / faculty /
+        resident / visitor); our nine lot pins are still placeholders. Placing them on real lots is the next decision.
