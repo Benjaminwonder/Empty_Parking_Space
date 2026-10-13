@@ -22,7 +22,7 @@ What: real Stetson building names on the map instead of "Building 1–80"; small
 Why: drivers know "Sage Hall", not "Building 44".
 BD: yes
 
-### V-5 · One-command launcher · BD
+### V-5 · One-command launcher · BD · **carried 2026-10-13**
 What: one command starts the replay, the server and the page in order, checks each is up, opens the browser, loops the day.
 Why: nobody should need three terminals to see the product.
 BD: yes

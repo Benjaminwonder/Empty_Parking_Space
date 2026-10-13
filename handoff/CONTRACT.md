@@ -21,6 +21,7 @@ Weeks: W1, W2, W3. Lanes: BD, DI, DK. Read BRIDGES.md first.
 ## Guidance rules (D4, used by BD-8)
 - A stall is named only from a free claim of cadence continuous or near_live still inside its ttl.
 - A camera that reports every 5 minutes (the PKLot photo lots) is near_live, ttl 8m (decided 2026-10-12). 15-minute and slower sources never name a stall.
+- The camera gate (vision.py): a camera may report near_live only if, on a day it never learned from, its "free" is wrong at most 1 time in 20. A camera that fails reports periodic_snapshot, so it gives rows and counts, never a promised spot.
 - Inside a lot, closest = row A first, then the lower stall number, until lots have real coordinates.
 - Any other claim inside its ttl → a zone, with its age. Past ttl → the last count and its age, no stall.
 - Regular car → regular stalls only. ADA → ADA first, then regular. EV → EV first, then regular.

@@ -91,7 +91,18 @@ Where things live:
 
 ### See it in the browser
 
-Needs Java 17 or newer for the page. Use three terminals, all in the repo folder:
+One command, from the repo folder (needs Java 17 or newer for the page):
+
+```
+python run.py
+```
+
+It makes a day of data if there is none, starts the data server and the page, opens your browser,
+and shows a live board in the terminal (campus time and free spots per lot). When the recorded day
+ends it starts again from the morning. Ctrl+C stops everything. Options: `--fresh` (new day of data),
+`--speed 60` (faster), `--no-browser`, `--quiet`. The servers' own output goes to `out/logs/`.
+
+The same thing by hand, in three terminals, all in the repo folder:
 
 ```
 python sim.py --minutes 900
@@ -110,6 +121,20 @@ sighting is; stalls show free, taken, held or unknown, and lots that only count 
 count, a gate) show their counts row by row with their age. Press **Claim this spot** and nobody
 else is sent there; if no car reaches it within 8 minutes (13 or 23 for slower cameras), it is
 released and you are told. Search takes buildings, lots or spots: `CUB`, `Lot 41`, `Sage B-04`.
+
+With your permission the page uses your location: a blue dot shows where you are, routes start
+from you, and the nearest lot with room opens by itself once. Off campus or refused, everything
+starts at the Main Gate instead. Location never leaves the page. Browsers only share location
+over HTTPS or on localhost, so a phone reaching the page through a laptop gets the Main Gate.
+
+Three lots run on real photos. PKLot's cameras (real lots, a photo every 5 minutes, every space
+labelled by people) play one weekday each on the Stetson map: Sage · Lot 33, Flagler · Lot 25 and
+Michigan Ave · Lot 42. `vision.py` learns each stall's empty look on other days, reads the replayed
+day, and grades itself against the people's labels. A camera only promises single spots if its
+"free" is wrong at most 1 time in 20 on that unseen day; Sage (99.4% right) and Flagler (99.9%) pass,
+Michigan Ave (94.4%, but 1 in 5 of its "free" calls wrong) does not, so it reports rows and counts.
+With the PKLot download in `data/`, `python pklot_cameras.py` then `python run.py` uses the photos;
+without it, every lot is simulated.
 
 The lots sit on real Stetson lots and every building carries its official name, from Stetson's
 DeLand campus map (edition of 7 Aug 2026, stetson.edu/maps).

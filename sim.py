@@ -113,7 +113,7 @@ def load_campus(path: Path) -> tuple[dict, list[tuple[dict, list[Stall]]]]:
             for n in range(1, lot["stalls_per_row"] + 1):
                 local = f"{row}-{n:02d}"
                 constraint = "ada" if local in special_ada else "ev" if local in special_ev else "any"
-                # Each row is a zone, so guidance can say "row B at the Sage lot".
+                # Each row is a zone, so guidance can say "row B at Sage Hall".
                 stalls.append(Stall(f"{lid}:{local}", f"{lid}:{row}", row, constraint))
         unknown = (special_ada | special_ev) - {s.stall_id.split(":", 1)[1] for s in stalls}
         if unknown:
@@ -192,8 +192,8 @@ class World:
         }
 
     def arrival_rate_per_tick(self, t: datetime, tick_s: int) -> float:
-        """why: a weekday commuter shape (steep 7–9, then taper), scaled to the tick length.
-        boundary: pure function of the lot-local hour; touches no state.
+        """why: a campus day: the morning rush, then steady traffic with a surge around every class change.
+        boundary: pure function of the lot-local time; touches no state.
         ugly: t must be lot-local; a UTC time here would put the morning rush four hours late.
         Scaled by lot size and demand, so a 14-stall lot does not get a 120-stall lot's traffic.
         """
@@ -207,20 +207,36 @@ class World:
             per_hour = 48
         elif hour < 9.0:
             per_hour = 36
-        elif hour < 10.0:
+        elif hour < 15.0:
+            per_hour = 26          # people keep coming for later classes all through the day
+        elif hour < 18.0:
             per_hour = 14
         else:
-            per_hour = 6
+            per_hour = 5
+        # Classes start on the hour: arrivals bunch up in the 15 minutes before it.
+        if 8.0 <= hour < 17.0 and t.minute >= 45:
+            per_hour *= 2.2
+        elif 8.0 <= hour < 17.0 and t.minute < 45:
+            per_hour *= 0.6
         return per_hour * self.demand_scale * (tick_s / 3600.0)
 
-    def stay_minutes(self) -> int:
-        """why: a mix of all-day commuters and short class hops, so stalls actually flip back to free.
-        boundary: draws from the World's seeded random generator only, so a seed replays the same morning.
-        ugly: none of these leave before 50 minutes, so a 3-hour run sees few departures early on.
+    def stay_minutes(self, t: datetime) -> int:
+        """why: who parks on a campus: class-hoppers who leave when a class ends, half-day visitors, all-day staff.
+        boundary: draws from the World's seeded random generator only, so a seed replays the same day.
+        ugly: class-hoppers leave a few minutes before an hour (classes end at :50), so departures come in
+              waves like the real thing; an all-day car may still be parked when the run ends.
         """
-        if self.rng.random() < 0.25:
-            return self.rng.randint(50, 110)
-        return self.rng.randint(240, 480)
+        roll = self.rng.random()
+        if roll < 0.50:
+            classes = self.rng.choice((1, 1, 2, 2, 3))           # one to three classes
+            leave = t + timedelta(hours=classes)
+            leave = leave.replace(minute=50 + self.rng.randint(0, 9), second=0)
+            if leave <= t + timedelta(minutes=40):
+                leave += timedelta(hours=1)
+            return int((leave - t).total_seconds() // 60)
+        if roll < 0.70:
+            return self.rng.randint(120, 240)                       # half a day
+        return self.rng.randint(300, 540)                           # staff and all-day students
 
     def step(self, t: datetime, tick_s: int) -> None:
         """why: advance the true lot by one tick: departures, then arrivals.
@@ -253,7 +269,7 @@ class World:
             stall = candidates[0]  # nearest-zone first — this is why people circle the near rows
             self.last_flips.append((stall.stall_id, "free", "occupied"))
             stall.true_state = "occupied"
-            stall.occupied_until = t + timedelta(minutes=self.stay_minutes())
+            stall.occupied_until = t + timedelta(minutes=self.stay_minutes(t))
             self.arrivals += 1
 
 
@@ -469,7 +485,7 @@ def truth_row(worlds: list[World], t: datetime) -> dict:
 
 
 def run(campus_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s: int,
-        cadence_override: list[str] | None, seed: int) -> dict:
+        cadence_override: list[str] | None, seed: int, skip: frozenset[str] = frozenset()) -> dict:
     """why: play one simulated morning across every lot and write its two files: the feed and the truth.
     boundary: writes only inside out_dir; the feed gets adapter events, the truth file gets World state.
     ugly: each lot gets its own seed (seed + position), so adding a lot changes no other lot's morning.
@@ -480,6 +496,9 @@ def run(campus_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s:
     for i, (lot, stalls) in enumerate(lots):
         w = World(lot, stalls, seed=seed + i)
         worlds.append(w)
+        # A lot read by a real camera (vision.py) gets no simulated sensor: one stall, one source.
+        if lot["lot_id"] in skip:
+            continue
         # One adapter instance per lot and sensor: snapshot adapters remember when they last fired.
         for name in cadence_override or lot["sensors"]:
             adapters.append((w, CADENCE_PRESETS[name]()))
@@ -513,7 +532,10 @@ def run(campus_path: Path, out_dir: Path, start: datetime, minutes: int, tick_s:
                       + " ".join(f"{w.lot_id}:{w.counts()['occupied']}/{len(w.stalls)}" for w in worlds))
             t += timedelta(seconds=tick_s)
 
-    truth = {"campus_id": campus["campus_id"], "tick_s": tick_s, "utc_offset": campus["utc_offset"], "ticks": truth_ticks}
+    # camera_lots: their World still turns (so seeds and other lots stay the same) but nothing it does
+    # reaches the feed; tests must not compare those lots against this truth.
+    truth = {"campus_id": campus["campus_id"], "tick_s": tick_s, "utc_offset": campus["utc_offset"],
+             "camera_lots": sorted(skip), "ticks": truth_ticks}
     truth_path.write_text(json.dumps(truth, separators=(",", ":")), encoding="utf-8")
     return {
         "feed_path": str(feed_path),
@@ -564,6 +586,7 @@ def main() -> None:
     p.add_argument("--tick", type=int, default=30, help="world tick seconds")
     p.add_argument("--start", default="2026-09-21T06:30:00", help="lot-local time, e.g. 2026-09-21T06:30:00")
     p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--skip", default="", help="lot ids a real camera covers (comma list): no simulated sensor there")
     args = p.parse_args()
 
     names = [n.strip() for n in args.cadence.split(",") if n.strip()] if args.cadence else None
@@ -579,7 +602,8 @@ def main() -> None:
     print(f"window={start.isoformat()} (= {_iso(start)}) +{args.minutes}m  tick={args.tick}s  seed={args.seed}")
     print(f"sensors={'every lot: ' + ','.join(names) if names else 'per lot, from ' + campus_path.name}")
     print()
-    result = run(campus_path, out_dir, start, args.minutes, args.tick, names, args.seed)
+    skip = frozenset(x.strip() for x in args.skip.split(",") if x.strip())
+    result = run(campus_path, out_dir, start, args.minutes, args.tick, names, args.seed, skip)
     print()
     print(f"lots={result['lots']}  stalls={result['stalls']}  arrivals={result['arrivals']}  departures={result['departures']}  events={result['event_count']}")
     print(f"by_source    {result['by_source']}")

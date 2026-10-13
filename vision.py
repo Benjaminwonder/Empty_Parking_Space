@@ -3,23 +3,28 @@
 """
 ParkFind vision adapter: photos in, occupancy events out.
 
-This is the first real sensor. It replaces a simulated camera, not the trunk:
-it writes the same OccupancyEvent (parkfind/event.py) the simulator writes, so
-DI's reader and DK's page cannot tell, and do not need to.
+This is the first real sensor. It replaces a simulated camera, not the trunk: it writes the same
+OccupancyEvent (parkfind/event.py) the simulator writes, so DI's reader and DK's page cannot
+tell, and do not need to.
 
-  camera file (cameras/<id>.json)   which lot, image size, one polygon per stall
-  frames (data/...)                 photos whose file names carry the capture time
-  -> out/<run>/feed.jsonl           one event per stall per photo
+  camera file (cameras/<lot>.json)   which lot, the photos, one polygon per Stetson stall
+                                      (made from PKLot by pklot_cameras.py)
+  -> out/cameras/<lot>.npz           what it learned: each stall's empty look + the car/no-car line
+  -> out/vision/<lot>.jsonl          one event per stall per photo, stamped with the photo's time
 
-The decision "is this stall occupied?" is a baseline for now: a car has edges
-(windows, wheels, outlines); empty pavement mostly does not. It is crude on
-purpose so the whole chain can run end to end. A trained model replaces
-classify() later without touching anything else.
+How a stall is read: we keep a picture of each stall when it is empty (built from the tuning
+photos, where people labelled it empty), and measure how different the current photo looks,
+plus how much edge detail it has (cars have windows, wheels, outlines). One small model per
+camera turns those two numbers into "occupied" or "free", and it leans to "occupied" when
+unsure: telling a driver a taken spot is free is the expensive mistake.
+
+Tuning uses other days than the one drivers see, and every run is graded against the people's
+labels for the replayed day; the grade is printed, not hidden.
 
 Pillow and NumPy are allowed here and only here. Nothing in parkfind/ imports them.
 
-  python vision.py --camera cameras/pucpr.json --frames "data/pklot/PUCPR/**/*.jpg" --out out/vision
-  python vision.py --camera cameras/pucpr.json --frames "data/pklot/PUCPR/**/*.jpg" --scores   (print raw scores)
+  python vision.py --camera cameras/sage.json            # learn if needed, then read the replayed day
+  python vision.py --camera cameras/sage.json --retrain  # learn again from the tuning photos
 """
 
 from __future__ import annotations
@@ -27,7 +32,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,17 +41,17 @@ from PIL import Image, ImageDraw
 from parkfind.event import CADENCES, OccupancyEvent
 
 HERE = Path(__file__).resolve().parent
-# PKLot names each photo by its capture time: 2012-09-11_15_16_58.jpg (local time at the lot).
-FILENAME_TIME = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{2})_(\d{2})_(\d{2})")
+WRONG_FREE_LIMIT = 0.05   # at most 1 in 20 "free" calls may be wrong, measured across the tuning days
 
 
 def load_camera(path: Path) -> dict:
-    """why: one camera's view of one lot: which lot, what image size, and where each stall sits in the picture.
-    boundary: reads the camera file only; stall ids are lot-local (A-01) and become lot:A-01 here.
+    """why: one camera's view of one lot: which lot, the photos, and where each stall sits in the picture.
+    boundary: reads the camera file only; stall ids are lot-local (A-01) and become lot:A-01 in events.
     ugly: polygons are in pixels of image_size; a photo of any other size would put every stall in the wrong place.
     """
     cam = json.loads(path.read_text(encoding="utf-8"))
-    for key in ("camera_id", "lot_id", "image_size", "cadence_class", "ttl", "utc_offset", "spaces"):
+    for key in ("camera_id", "lot_id", "image_size", "cadence_class", "ttl", "utc_offset", "spaces",
+                "replay_date", "tuning", "replay"):
         if key not in cam:
             raise SystemExit(f"{path.name}: missing {key!r}")
     if cam["cadence_class"] not in CADENCES:
@@ -55,151 +59,212 @@ def load_camera(path: Path) -> dict:
     stalls = [s["stall"] for s in cam["spaces"]]
     if len(stalls) != len(set(stalls)):
         raise SystemExit(f"{path.name}: a stall id appears twice")
-    for s in cam["spaces"]:
-        if len(s["polygon"]) < 3:
-            raise SystemExit(f"{path.name}: stall {s['stall']} needs at least 3 polygon points")
     return cam
 
 
 def offset_tz(text: str) -> timezone:
-    """why: a photo's file name says local time at the lot; the event needs UTC.
+    """why: the replay day is in the lot's local time; events need UTC.
     boundary: parses '+hh:mm' / '-hh:mm' only; no zone names, so no tz database on Windows.
-    ugly: a fixed offset ignores daylight saving; Curitiba moved from -03:00 to -02:00 in late October 2012.
+    ugly: a fixed offset ignores daylight saving, like the rest of the trunk.
     """
     m = re.match(r"^([+-])(\d{2}):(\d{2})$", text)
     if not m:
-        raise SystemExit(f"utc_offset {text!r} must look like -03:00")
+        raise SystemExit(f"utc_offset {text!r} must look like -04:00")
     sign = -1 if m.group(1) == "-" else 1
     return timezone(sign * timedelta(hours=int(m.group(2)), minutes=int(m.group(3))))
 
 
-def frame_time(path: Path, tz: timezone) -> datetime | None:
-    """why: observed_at must be when the photo was taken, never when we happened to process it.
-    boundary: reads the file name only; the file's modified time is a download time and is ignored.
-    ugly: a name without a timestamp, or a browser copy like '... (1).jpg', still parses; one with no time returns None and is skipped.
+def observed_at(cam: dict, photo: dict) -> str:
+    """why: observed_at must be when the photo was taken, moved onto the replay day at the same clock time.
+    boundary: reads the photo's local clock time and the camera's replay date and offset.
+    ugly: a 2013 photo at 08:25 becomes 08:25 on the replay day; the date is the only thing that changes.
     """
-    m = FILENAME_TIME.search(path.name)
-    if not m:
-        return None
-    y, mo, d, h, mi, s = (int(x) for x in m.groups())
-    return datetime(y, mo, d, h, mi, s, tzinfo=tz).astimezone(timezone.utc)
+    local = datetime.fromisoformat(f"{cam['replay_date']}T{photo['local_time']}").replace(tzinfo=offset_tz(cam["utc_offset"]))
+    return local.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def stall_masks(cam: dict) -> list[tuple[str, np.ndarray]]:
-    """why: turn each stall polygon into a pixel mask once, instead of once per photo.
+def stall_shapes(cam: dict) -> list[tuple[str, int, int, int, int, np.ndarray]]:
+    """why: each stall's box in the picture and its exact shape inside the box, worked out once.
     boundary: pure geometry from the camera file; never looks at a photo.
-    ugly: a polygon drawn partly off the image is clipped, so a stall at the edge measures fewer pixels.
+    ugly: a polygon partly off the picture is clipped to it.
     """
     w, h = cam["image_size"]
-    masks = []
+    out = []
     for s in cam["spaces"]:
-        canvas = Image.new("L", (w, h), 0)
-        ImageDraw.Draw(canvas).polygon([tuple(p) for p in s["polygon"]], fill=1)
-        masks.append((s["stall"], np.asarray(canvas, dtype=bool)))
-    return masks
+        xs = [p[0] for p in s["polygon"]]
+        ys = [p[1] for p in s["polygon"]]
+        x0, y0 = max(0, int(min(xs))), max(0, int(min(ys)))
+        x1, y1 = min(w, int(max(xs)) + 1), min(h, int(max(ys)) + 1)
+        mask = Image.new("L", (x1 - x0, y1 - y0), 0)
+        ImageDraw.Draw(mask).polygon([(x - x0, y - y0) for x, y in s["polygon"]], fill=1)
+        out.append((s["stall"], x0, y0, x1, y1, np.asarray(mask, dtype=bool)))
+    return out
 
 
-def edge_energy(gray: np.ndarray) -> np.ndarray:
-    """why: the per-pixel 'how much is going on here' map the baseline decides from.
-    boundary: pure arithmetic on one grayscale image.
-    ugly: hard shadow lines and painted markings also count as edges; that is this baseline's main source of false 'occupied'.
+def crops(path: Path, cam: dict, shapes) -> list[tuple[np.ndarray, float]] | None:
+    """why: each stall's patch of one photo, brightness-normalised, plus its edge detail.
+    boundary: reads one image; returns None for a photo of the wrong size instead of stretching it.
+    ugly: normalising brightness makes a cloud passing over count as nothing, which is the point.
     """
-    gx = np.abs(np.diff(gray, axis=1, append=gray[:, -1:]))
-    gy = np.abs(np.diff(gray, axis=0, append=gray[-1:, :]))
-    return gx + gy
-
-
-def classify(score: float, threshold: float, margin: float) -> tuple[str, float]:
-    """why: turn one stall's edge score into occupied/free and an honest confidence.
-    boundary: numbers in, decision out; the only function a trained model needs to replace.
-    ugly: near the threshold the answer is a coin flip, so confidence there is reported near 0.5, never inflated.
-    """
-    state = "occupied" if score > threshold else "free"
-    confidence = 0.5 + 0.45 * min(1.0, abs(score - threshold) / margin)
-    return state, round(confidence, 2)
-
-
-def read_frame(path: Path, cam: dict, masks, tz: timezone, threshold: float, margin: float):
-    """why: one photo becomes one event per stall, all stamped with the photo's own time.
-    boundary: reads one image; writes nothing; the caller decides where events go.
-    ugly: a photo of the wrong size is refused rather than stretched, because stretching moves every stall.
-    """
-    when = frame_time(path, tz)
-    if when is None:
-        return None, "no capture time in file name"
     with Image.open(path) as im:
         if list(im.size) != list(cam["image_size"]):
-            return None, f"size {im.size} is not the camera's {tuple(cam['image_size'])}"
+            return None
         gray = np.asarray(im.convert("L"), dtype=np.float32)
-    energy = edge_energy(gray)
-    observed_at = when.strftime("%Y-%m-%dT%H:%M:%SZ")
-    lot = cam["lot_id"]
-    events, scores = [], {}
-    for stall, mask in masks:
-        score = float(energy[mask].mean()) if mask.any() else 0.0
-        scores[stall] = round(score, 2)
-        state, confidence = classify(score, threshold, margin)
-        row = stall.split("-", 1)[0]
-        events.append(OccupancyEvent(
-            stall_id=f"{lot}:{stall}", zone_id=f"{lot}:{row}", lot_id=lot,
-            state=state, confidence=confidence, source=cam["camera_id"],
-            observed_at=observed_at, ttl=cam["ttl"], cadence_class=cam["cadence_class"],
-        ))
-    return (events, scores), None
+    out = []
+    for _, x0, y0, x1, y1, m in shapes:
+        c = gray[y0:y1, x0:x1]
+        e = np.abs(np.diff(c, axis=1, append=c[:, -1:])) + np.abs(np.diff(c, axis=0, append=c[-1:, :]))
+        v = c[m]
+        out.append(((c - v.mean()) / (v.std() + 1e-6), float(e[m].mean())))
+    return out
+
+
+def features(patches, refs, shapes) -> np.ndarray:
+    """why: the two numbers the model reads per stall: how unlike its empty self it looks, and its edge detail.
+    boundary: arithmetic on patches; refs are the stalls' empty looks from training.
+    """
+    return np.array([[float(np.abs(z - r)[s[5]].mean()), e] for (z, e), r, s in zip(patches, refs, shapes)])
+
+
+def train(cam: dict, shapes, model_path: Path) -> None:
+    """why: learn each stall's empty look and the car/no-car line from the tuning photos and their labels.
+    boundary: reads tuning photos only; writes model_path. The replayed day is never used here.
+    ugly: a stall never labelled empty on the tuning days has no empty look; training stops and says which.
+    """
+    sids = [str(s["space_id"]) for s in cam["spaces"]]
+    seen, days = [], []
+    for photo in cam["tuning"]:
+        p = crops(HERE / photo["file"], cam, shapes)
+        if p is not None:
+            seen.append((p, [photo["labels"][sid] for sid in sids]))
+            days.append(photo.get("day", Path(photo["file"]).name[:10]))
+    refs = []
+    for k, (stall, *_rest) in enumerate(shapes):
+        empty = [p[k][0] for p, labels in seen if labels[k] == 0]
+        if len(empty) < 3:
+            raise SystemExit(f"{cam['lot_id']}:{stall} was never seen empty on the tuning days; pick other days")
+        refs.append(np.median(np.stack(empty), axis=0))
+    X = np.concatenate([features(p, refs, shapes) for p, _ in seen])
+    y = np.concatenate([np.array(labels) for _, labels in seen]).astype(float)
+    day = np.concatenate([np.full(len(sids), d) for (_, _), d in zip(seen, days)])
+
+    # How cautious this camera must be, decided on the tuning days alone: learn on one day, read the
+    # other, and take the lowest "occupied" line that keeps wrong "free" calls under the limit.
+    probs = np.zeros(len(y))
+    for d in set(days):
+        fit = fit_line(X[day != d], y[day != d])
+        probs[day == d] = fit(X[day == d])
+    caution = 0.05   # if no line meets the limit, be as cautious as the model allows
+    for t in np.arange(0.05, 0.51, 0.01):
+        free = probs <= t
+        if free.sum() and (y[free] == 1).mean() <= WRONG_FREE_LIMIT:
+            caution = float(t)   # the highest line that still meets the limit: as many honest "free" as possible
+    w, mu, sd = fit_line(X, y, raw=True)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(model_path, w=w, mu=mu, sd=sd, caution=caution, refs=np.array(refs, dtype=object))
+    print(f"  learned from {len(seen)} tuning photos ({int(y.sum())} occupied / {int(len(y) - y.sum())} free stall views); "
+          f"says occupied above {caution:.2f}")
+
+
+def fit_line(X: np.ndarray, y: np.ndarray, raw: bool = False):
+    """why: the car/no-car line: logistic regression on the two numbers, plain gradient descent, no library.
+    boundary: numbers in; returns either a predictor or (with raw) the weights and scaling to save.
+    """
+    mu, sd = X.mean(0), X.std(0) + 1e-6
+    Z = np.c_[(X - mu) / sd, np.ones(len(X))]
+    w = np.zeros(3)
+    for _ in range(800):
+        q = 1 / (1 + np.exp(-Z @ w))
+        w -= 0.5 * Z.T @ (q - y) / len(y)
+    if raw:
+        return w, mu, sd
+    return lambda Xb: 1 / (1 + np.exp(-(np.c_[(Xb - mu) / sd, np.ones(len(Xb))] @ w)))
+
+
+def classify(prob: float, caution: float) -> tuple[str, float]:
+    """why: turn the model's 'probably a car' into a state and an honest confidence.
+    boundary: numbers in, decision out; the only function a better model needs to replace.
+    ugly: the line sits at the camera's own caution (below 0.5): when unsure we say occupied.
+    """
+    state = "occupied" if prob > caution else "free"
+    confidence = prob if state == "occupied" else 1 - prob
+    return state, round(min(0.99, max(0.5, confidence)), 2)
 
 
 def main() -> None:
-    """why: the command line: one camera, a set of photos, one feed file in time order.
-    boundary: reads the camera file and photos; writes only out/<run>/feed.jsonl (or prints scores).
-    ugly: photos arrive in any order from a download, so they are sorted by capture time, not by file name.
+    """why: one camera: learn if needed, read every replayed photo, write its events, grade it.
+    boundary: reads the camera file and photos; writes out/cameras/<lot>.npz and out/vision/<lot>.jsonl.
+    ugly: the people's labels for the replayed day are used ONLY for the grade (and the gate), never for a state.
     """
-    p = argparse.ArgumentParser(description="ParkFind vision adapter (baseline)")
-    p.add_argument("--camera", required=True, help="camera file, e.g. cameras/pucpr.json")
-    p.add_argument("--frames", required=True, help='photo glob under this folder, e.g. "data/pklot/PUCPR/**/*.jpg"')
-    p.add_argument("--out", default="out/vision", help="run folder for feed.jsonl")
-    p.add_argument("--threshold", type=float, default=None, help="edge score above which a stall is occupied")
-    p.add_argument("--margin", type=float, default=None, help="score distance that earns full confidence")
-    p.add_argument("--scores", action="store_true", help="print raw scores per stall instead of writing a feed")
-    args = p.parse_args()
+    ap = argparse.ArgumentParser(description="ParkFind vision adapter")
+    ap.add_argument("--camera", required=True, help="camera file, e.g. cameras/sage.json")
+    ap.add_argument("--out", default="out/vision", help="folder for <lot>.jsonl")
+    ap.add_argument("--retrain", action="store_true", help="learn again from the tuning photos")
+    args = ap.parse_args()
 
-    cam = load_camera(Path(args.camera))
-    threshold = args.threshold if args.threshold is not None else cam.get("threshold", 12.0)
-    margin = args.margin if args.margin is not None else cam.get("margin", 6.0)
-    tz = offset_tz(cam["utc_offset"])
-    masks = stall_masks(cam)
-    frames = sorted(HERE.glob(args.frames), key=lambda f: frame_time(f, tz) or datetime.max.replace(tzinfo=timezone.utc))
-    if not frames:
-        raise SystemExit(f"no photos match {args.frames!r} under {HERE}")
+    cam_path = Path(args.camera)
+    cam = load_camera(cam_path if cam_path.is_absolute() else HERE / cam_path)
+    shapes = stall_shapes(cam)
+    model_path = HERE / "out" / "cameras" / f"{cam['lot_id']}.npz"
+    print(f"{cam['camera_id']} -> {cam['lot_id']} ({len(shapes)} stalls)")
+    if args.retrain or not model_path.exists() or model_path.stat().st_mtime < (HERE / cam_path).stat().st_mtime:
+        train(cam, shapes, model_path)
+    m = np.load(model_path, allow_pickle=True)
+    w, mu, sd, refs, caution = m["w"], m["mu"], m["sd"], list(m["refs"]), float(m["caution"])
 
     out_dir = Path(args.out) if Path(args.out).is_absolute() else HERE / args.out
     out_dir.mkdir(parents=True, exist_ok=True)
-    feed_path = out_dir / "feed.jsonl"
-    written, skipped, seen = 0, 0, set()
-    # --scores only prints, so it must not truncate an existing feed.
-    with (nullcontext() if args.scores else feed_path.open("w", encoding="utf-8", newline="\n")) as feed:
-        for f in frames:
-            result, why_not = read_frame(f, cam, masks, tz, threshold, margin)
-            if result is None:
-                skipped += 1
-                print(f"skip  {f.name}: {why_not}")
-                continue
-            events, scores = result
-            key = events[0].observed_at
-            if key in seen:  # the same moment downloaded twice ('... (1).jpg')
-                skipped += 1
-                print(f"skip  {f.name}: duplicate of a photo at {key}")
-                continue
-            seen.add(key)
-            if args.scores:
-                print(key, json.dumps(scores))
-                continue
-            for e in events:
-                feed.write(json.dumps(e.to_json()) + "\n")
-            written += len(events)
-            occ = sum(1 for e in events if e.state == "occupied")
-            print(f"{key}  {occ}/{len(events)} occupied   {f.name}")
-    if not args.scores:
-        print(f"\nphotos={len(frames) - skipped}  skipped={skipped}  events={written}  feed={feed_path}")
+    feed_path = out_dir / f"{cam['lot_id']}.jsonl"
+    sids = [str(s["space_id"]) for s in cam["spaces"]]
+    lot = cam["lot_id"]
+
+    # 1. read every replayed photo
+    readings, skipped = [], 0
+    for photo in cam["replay"]:
+        patches = crops(HERE / photo["file"], cam, shapes)
+        if patches is None:
+            skipped += 1
+            continue
+        X = (features(patches, refs, shapes) - mu) / sd
+        probs = 1 / (1 + np.exp(-(np.c_[X, np.ones(len(X))] @ w)))
+        readings.append((photo, [classify(float(p), caution) for p in probs]))
+
+    # 2. grade against the people's labels (used for the grade only, never for a stall's state)
+    right = wrong_free = wrong_occ = said_free = said_occ = 0
+    for photo, calls in readings:
+        for (state, _), sid in zip(calls, sids):
+            truth = photo["labels"][sid]
+            if state == "free":
+                said_free += 1
+                wrong_free += truth == 1
+            else:
+                said_occ += 1
+                wrong_occ += truth == 0
+            right += (state == "occupied") == (truth == 1)
+    total = said_free + said_occ
+    free_wrong = wrong_free / max(1, said_free)
+
+    # 3. the gate: a camera may promise single spots (near_live) only if its "free" is right 19 times in 20
+    #    on a day it never learned from; otherwise it reports like a slow sensor (rows and counts, D4)
+    cadence = cam["cadence_class"] if free_wrong <= WRONG_FREE_LIMIT else "periodic_snapshot"
+    with feed_path.open("w", encoding="utf-8", newline="\n") as feed:
+        for photo, calls in readings:
+            when = observed_at(cam, photo)
+            for (stall, *_rest), (state, confidence) in zip(shapes, calls):
+                ev = OccupancyEvent(stall_id=f"{lot}:{stall}", zone_id=f"{lot}:{stall.split('-')[0]}", lot_id=lot,
+                                    state=state, confidence=confidence, source=cam["camera_id"],
+                                    observed_at=when, ttl=cam["ttl"], cadence_class=cadence)
+                feed.write(json.dumps(ev.to_json()) + "\n")
+    print(f"  {len(readings)} photos -> {feed_path.relative_to(HERE)} ({total} stall readings)")
+    print(f"  grade vs people's labels: {100 * right / total:.1f}% right; "
+          f"'free' wrong {100 * free_wrong:.1f}% of the time; 'occupied' wrong {100 * wrong_occ / max(1, said_occ):.1f}%")
+    print("  gate: " + ("passed, names single spots (near_live)" if cadence == cam["cadence_class"] else
+                       f"failed ('free' must be wrong at most {100 * WRONG_FREE_LIMIT:.0f}% of the time), "
+                       "reports rows and counts only (periodic_snapshot)"))
+    (out_dir / f"{lot}.grade.json").write_text(json.dumps({
+        "camera_id": cam["camera_id"], "lot_id": lot, "right": round(right / total, 4),
+        "free_wrong": round(free_wrong, 4), "occupied_wrong": round(wrong_occ / max(1, said_occ), 4),
+        "cadence": cadence, "caution": caution}, indent=1), encoding="utf-8")
 
 
 if __name__ == "__main__":

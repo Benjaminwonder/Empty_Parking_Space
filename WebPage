@@ -550,6 +550,9 @@ body.show-buildings #lotList { display: none; }
 .side-col {
     flex: none;
     width: 360px;
+    /* never taller than the map: on short screens the column scrolls, the page doesn't */
+    max-height: max(460px, calc(100vh - 150px));
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 16px;
@@ -1171,6 +1174,36 @@ body.show-buildings .bpin { display: inline; }
 .chip.on .chip-icon { color: #ffffff; }
 .chip.on .chip-icon svg text { fill: var(--chip); }
 .chip-divider { width: 1px; align-self: stretch; background: #d0d4d8; margin: 2px 10px; }
+/* you on the map: a blue dot with an accuracy ring, like any map app */
+.me-ring { fill: #1a73e8; fill-opacity: 0.14; stroke: #1a73e8; stroke-opacity: 0.35; stroke-width: 2; }
+.me-dot { fill: #1a73e8; stroke: #ffffff; stroke-width: 4; }
+.me-pulse { fill: none; stroke: #1a73e8; stroke-width: 3; animation: mepulse 2s ease-out infinite;
+            transform-box: fill-box; transform-origin: center; }
+@keyframes mepulse { from { opacity: 0.7; transform: scale(1); } to { opacity: 0; transform: scale(2.6); } }
+.me-card { padding: 0; font-size: 14px; flex: none; }
+.me-head { display: flex; gap: 10px; align-items: center; padding: 10px 12px 10px 16px; cursor: pointer;
+           user-select: none; }
+.me-head .me-title { flex: 1; font-weight: bold; }
+.me-head .me-peek { color: #6b7280; font-size: 12px; font-weight: normal; margin-left: 6px; }
+.me-card .me-icon { width: 12px; height: 12px; border-radius: 50%; flex: none; background: #9ca3af; }
+.me-card.on .me-icon { background: #1a73e8; box-shadow: 0 0 0 4px rgba(26,115,232,0.2); }
+.me-arrow { border: none; background: #f1f3f4; width: 28px; height: 28px; border-radius: 50%; cursor: pointer;
+            font-size: 13px; color: #374151; transition: transform 0.2s ease; }
+.me-card.collapsed .me-arrow { transform: rotate(-90deg); }
+.me-body { display: flex; gap: 12px; align-items: center; padding: 0 16px 12px 38px; }
+.me-card.collapsed .me-body { display: none; }
+.me-card .me-text { flex: 1; }
+.me-card .me-text b { display: block; }
+.me-card .btn { margin: 0; }
+.me-alt { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #e0e3e5; color: #6b7280; font-size: 12px; }
+.me-link { color: #1a73e8; }
+.lot-row .lr-far { color: #6b7280; font-size: 12px; margin-left: 6px; }
+/* the close-up folds to its title bar, like the location card; the arrow brings the picture back */
+.closeup-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; cursor: pointer;
+                user-select: none; }
+.closeup.collapsed svg { display: none; }
+.closeup.collapsed .closeup-age { margin-bottom: 0; }
+.closeup.collapsed .me-arrow { transform: rotate(-90deg); }
 .stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
 
 </style>
@@ -1213,8 +1246,13 @@ body.show-buildings .bpin { display: inline; }
 
         <!-- the close-up inset. hidden until a spot is picked -->
         <div class="closeup" id="closeup">
-            <div class="closeup-title" id="closeupTitle"></div>
-            <div class="closeup-age" id="closeupAge"></div>
+            <div class="closeup-head" id="closeupHead" title="Hide or show the close-up">
+                <div>
+                    <div class="closeup-title" id="closeupTitle"></div>
+                    <div class="closeup-age" id="closeupAge"></div>
+                </div>
+                <button class="me-arrow" id="closeupArrow">&#9660;</button>
+            </div>
             <svg id="closeupSvg"></svg>
         </div>
 
@@ -1241,6 +1279,7 @@ body.show-buildings .bpin { display: inline; }
             <div class="bkey-sub">Official names (Stetson campus map, Aug 2026). Click one for the closest parking.</div>
             <div class="bkey-list" id="buildingKeyList"></div>
         </div>
+        <div class="side me-card" id="meCard"></div>
         <div class="side" id="side"></div>
         <div class="side" id="lotList">
             <h2>Lots right now</h2>
@@ -1357,8 +1396,33 @@ function wRect(x, y, w, h, keepSize) {
     return { x: X[0], y: Y[0], w: X[1], h: Y[1] };
 }
 
-const GATE_X = WX(168);
-const GATE_Y = WY(547);
+// ---------- real-world coordinates ----------
+// The drawing tied to the ground: five road crossings read off Google Maps by BD (2026-10-13),
+// Woodland & Michigan, Woodland & Pennsylvania, Amelia & University, Garfield & Minnesota,
+// Amelia & Ohio, fitted to the same crossings on this drawing. Every point fits within about 1 m
+// (each predicted from the other four within 4 m); the drawing is north-up to 0.2 degrees.
+// metres east and north of (GEO.lat0, GEO.lon0) = u * A[0] + v * A[1] + A[2], u/v in picture units
+const GEO = { lat0: 29.0355, lon0: -81.2995,
+              A: [[1.80372, 0.00531], [0.05338, -1.81864], [-730.5595, 774.4908]] };
+const M_PER_UNIT = 1.81;   // one picture unit is about 1.81 m on the ground
+
+function geoToPic(lat, lon) {
+    const mx = (lon - GEO.lon0) * Math.cos(GEO.lat0 * Math.PI / 180) * 111320 - GEO.A[2][0];
+    const my = (lat - GEO.lat0) * 110574 - GEO.A[2][1];
+    const a = GEO.A[0][0], b = GEO.A[1][0], c = GEO.A[0][1], d = GEO.A[1][1];
+    const det = a * d - b * c;
+    return { u: (d * mx - b * my) / det, v: (-c * mx + a * my) / det };
+}
+
+// straight-line metres between two points in picture units (the real, unstretched positions)
+function unitsToMetres(u1, v1, u2, v2) {
+    return Math.round(Math.hypot(u2 - u1, v2 - v1) * M_PER_UNIT);
+}
+
+const GATE_U = 169, GATE_V = 547;    // the Main Gate: where Woodland's and Michigan's centrelines cross
+let me = null;   // the driver from the browser's location: {u, v, acc (m), onCampus}, or null
+const GATE_X = WX(GATE_U);
+const GATE_Y = WY(GATE_V);
 
 // the lot's own road is East Oakdale Ave (measured y=98), the road the
 // O-series commuter lots open onto, north of the Rinker Intramural block
@@ -1532,7 +1596,12 @@ el("circle", { cx: WX(510), cy: WY(331), r: 7 * S, fill: "#9fc5d9" }, quad);
 const quadBox = wRect(446, 268, 140, 130);
 keepClear(quadBox.x, quadBox.y, quadBox.w, quadBox.h, 0);
 
-function road(x, y, w, h, label, vertical) {
+// every road's centreline in picture units, for the route network (see "routes along roads")
+const ROAD_LINES = [];
+
+function road(x, y, w, h, label, vertical, name) {
+    ROAD_LINES.push(vertical ? { v: true, c: x + w / 2, a: y, b: y + h, name: name || label }
+                             : { v: false, c: y + h / 2, a: x, b: x + w, name: name || label });
     const r = wRect(x, y, w, h);
     const rect = el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, fill: "#9aa0a6" }, roadLayer);
     if (x === 0 && w === 690) {
@@ -1555,9 +1624,9 @@ function road(x, y, w, h, label, vertical) {
 // DK note: every road below is measured off the real campus map image
 // (gray-pixel band detection), not guessed. x/y are picture units (690x736).
 // vertical roads, left to right
-road(52, 0, 6, 736, "", true);                             // west edge alley
+road(52, 0, 6, 736, "", true, "the west service road");   // west edge alley
 road(165, 0, 8, 736, "N WOODLAND BLVD", true);              // US 17/92, the campus spine
-road(312, 0, 6, 390, "", true);                             // short connector by Rinker/Stetson Green
+road(312, 0, 6, 390, "", true, "BERT FISH DR");             // Bert Fish Dr on Stetson's map (unlabelled here)
 road(388, 0, 6, 736, "N AMELIA AVE", true);
 road(612, 0, 6, 736, "N GARFIELD AVE", true);
 
@@ -2088,6 +2157,8 @@ function fetchStatus() {
             followAnswer();
             setStatus(map);
             updateLotPins();
+            renderMeCard();        // nearest lot with room can change with every update
+            maybeOpenNearest();
         })
         .catch(function () {
             if (seq < appliedSeq) {
@@ -2194,7 +2265,11 @@ function renderLotList() {
         .forEach(function (r) {
             const row = h("div", "lot-row", undefined, box);
             h("span", "lr-dot", undefined, row).style.background = PIN_HEX[r.s.cls];
-            h("span", "lr-name", lotName(r.z), row);
+            const nm = h("span", "lr-name", lotName(r.z), row);
+            const far = metresToLot(r.z);
+            if (far !== null) {
+                h("span", "lr-far", far + " m", nm);
+            }
             const bar = h("span", "lr-bar", undefined, row);
             const fill = h("span", undefined, undefined, bar);
             fill.style.width = Math.round(100 * r.s.free / r.s.total) + "%";
@@ -2507,16 +2582,271 @@ function lotPath(st) {
 // column, then straight to the pin. The pins sit on the real lots; this drive is still straight
 // lines, not the actual streets, so it shows the
 // direction to go, not a road-accurate path.
-function approachPath(z) {
+// Where a trip starts: the driver, when we know they are on campus; otherwise the Main Gate.
+function origin() {
+    if (me !== null && me.onCampus) {
+        return { u: me.u, v: me.v, x: WX(me.u), y: WY(me.v), atGate: false };
+    }
+    return { u: GATE_U, v: GATE_V, x: GATE_X, y: GATE_Y, atGate: true };
+}
+
+"""; 
+        String part2b = """
+// ---------- routes along roads ----------
+// why: a route must follow streets, never cut across lawns or buildings: every road is a centreline,
+//      every crossing an intersection, and Dijkstra finds the shortest drive in real metres.
+// boundary: built from the roads drawn on this map (ROAD_LINES), in real, unstretched picture units;
+//           drawn through WX/WY, which keeps straight roads straight, so the path stays on the asphalt.
+// ugly: it knows only what the map draws: no one-way streets, turn bans or closed stretches. If a drawn
+//       road is not drivable, remove it from ROAD_LINES and every route avoids it.
+function roadName(r) {
+    if (!r.name) {
+        return "the campus road";
+    }
+    if (r.name.charAt(0) !== r.name.charAt(0).toUpperCase() || r.name !== r.name.toUpperCase()) {
+        return r.name;   // already written for people ("the west service road")
+    }
+    return r.name.toLowerCase().replace(/\\b\\w/g, function (c) { return c.toUpperCase(); })
+                 .replace(/^East /, "E ").replace(/^West /, "W ");
+}
+
+// Stretches of a drawn road that cars cannot use (pedestrian ways, closed blocks): [road name, from, to]
+// in picture units along the road. Empty until someone who knows campus says which ones; one line each.
+const CLOSED = [];
+
+function closedBetween(road, a, b) {
+    return CLOSED.some(function (c) {
+        return c[0] === road.name && Math.max(a, b) > c[1] && Math.min(a, b) < c[2];
+    });
+}
+
+let NET = null;   // { nodes: [{u, v}], edges: [[{to, len, road}]] }, built once from ROAD_LINES
+
+function buildNet() {
+    const nodes = [], index = {}, onRoad = ROAD_LINES.map(function () { return []; });
+    const nodeAt = function (u, v) {
+        const k = Math.round(u * 10) + "," + Math.round(v * 10);
+        if (index[k] === undefined) {
+            index[k] = nodes.length;
+            nodes.push({ u: u, v: v });
+        }
+        return index[k];
+    };
+    ROAD_LINES.forEach(function (r, i) {
+        onRoad[i].push(nodeAt(r.v ? r.c : r.a, r.v ? r.a : r.c));
+        onRoad[i].push(nodeAt(r.v ? r.c : r.b, r.v ? r.b : r.c));
+    });
+    ROAD_LINES.forEach(function (p, i) {
+        ROAD_LINES.forEach(function (q, j) {
+            if (p.v && !q.v && q.a <= p.c && p.c <= q.b && p.a <= q.c && q.c <= p.b) {
+                const n = nodeAt(p.c, q.c);   // a crossing belongs to both roads
+                onRoad[i].push(n);
+                onRoad[j].push(n);
+            }
+        });
+    });
+    const edges = nodes.map(function () { return []; });
+    ROAD_LINES.forEach(function (r, i) {
+        const along = function (n) { return r.v ? nodes[n].v : nodes[n].u; };
+        const list = Array.from(new Set(onRoad[i])).sort(function (m, n) { return along(m) - along(n); });
+        for (let k = 1; k < list.length; k++) {
+            const len = Math.abs(along(list[k]) - along(list[k - 1]));
+            if (closedBetween(r, along(list[k - 1]), along(list[k]))) {
+                continue;   // a closed stretch is simply not part of the network
+            }
+            edges[list[k - 1]].push({ to: list[k], len: len, road: i });
+            edges[list[k]].push({ to: list[k - 1], len: len, road: i });
+        }
+    });
+    NET = { nodes: nodes, edges: edges };
+}
+
+// the nearest point on any road to a point, or to a lot's rectangle (then: the lot's driveway)
+function snapToRoad(u, v, rect) {
+    let best = null;
+    ROAD_LINES.forEach(function (r, i) {
+        const tu = rect ? rect.x + rect.w / 2 : u, tv = rect ? rect.y + rect.h / 2 : v;
+        const t = Math.max(r.a, Math.min(r.b, r.v ? tv : tu));
+        const pu = r.v ? r.c : t, pv = r.v ? t : r.c;
+        let d;
+        if (rect) {
+            const dx = Math.max(rect.x - pu, 0, pu - (rect.x + rect.w));
+            const dy = Math.max(rect.y - pv, 0, pv - (rect.y + rect.h));
+            d = Math.hypot(dx, dy);
+        } else {
+            d = Math.hypot(pu - u, pv - v);
+        }
+        if (best === null || d < best.d - 1e-6) {
+            best = { u: pu, v: pv, road: i, d: d };
+        }
+    });
+    return best;
+}
+
+// Dijkstra over the network plus two temporary nodes (start and end, each spliced into its road)
+function shortestDrive(start, end) {
+    if (NET === null) {
+        buildNet();
+    }
+    const nodes = NET.nodes.slice(), edges = NET.edges.map(function (e) { return e.slice(); });
+    const splice = function (pt) {
+        const id = nodes.length;
+        nodes.push({ u: pt.u, v: pt.v });
+        edges.push([]);
+        const r = ROAD_LINES[pt.road];
+        const along = function (n) { return r.v ? nodes[n].v : nodes[n].u; };
+        const mine = function (n) { return r.v ? Math.abs(nodes[n].u - r.c) < 0.01 : Math.abs(nodes[n].v - r.c) < 0.01; };
+        let lo = null, hi = null;
+        for (let n = 0; n < id; n++) {
+            if (!mine(n) || along(n) < r.a - 0.01 || along(n) > r.b + 0.01) {
+                continue;
+            }
+            if (along(n) <= along(id) && (lo === null || along(n) > along(lo))) {
+                lo = n;
+            }
+            if (along(n) >= along(id) && (hi === null || along(n) < along(hi))) {
+                hi = n;
+            }
+        }
+        [lo, hi].forEach(function (n) {
+            if (n !== null && n !== id) {
+                const len = Math.abs(along(n) - along(id));
+                edges[id].push({ to: n, len: len, road: pt.road });
+                edges[n].push({ to: id, len: len, road: pt.road });
+            }
+        });
+        return id;
+    };
+    const s = splice(start), t = splice(end);
+    const dist = nodes.map(function () { return Infinity; }), prev = nodes.map(function () { return null; });
+    const done = nodes.map(function () { return false; });
+    dist[s] = 0;
+    for (;;) {
+        let u = -1;
+        for (let n = 0; n < nodes.length; n++) {
+            if (!done[n] && dist[n] < Infinity && (u === -1 || dist[n] < dist[u])) {
+                u = n;
+            }
+        }
+        if (u === -1 || u === t) {
+            break;
+        }
+        done[u] = true;
+        edges[u].forEach(function (e) {
+            if (dist[u] + e.len < dist[e.to]) {
+                dist[e.to] = dist[u] + e.len;
+                prev[e.to] = { from: u, road: e.road };
+            }
+        });
+    }
+    if (dist[t] === Infinity) {
+        return null;
+    }
+    const path = [];
+    for (let n = t; n !== null; n = prev[n] ? prev[n].from : null) {
+        path.unshift({ u: nodes[n].u, v: nodes[n].v, road: prev[n] ? prev[n].road : null });
+    }
+    return path;
+}
+
+// The whole trip to a lot, in picture units: start, onto the nearest road, along roads, into the lot.
+// Each point carries the road taken to reach it (null for the off-road ends).
+function tripTo(z) {
     const m = markerFor(z);
     if (!m) {
         return null;
     }
-    const mr = wRect(m.x, m.y, m.w, m.h);
-    const endX = mr.x + mr.w / 2;
-    const below = mr.y > GATE_Y;
-    const endY = below ? mr.y : mr.y + mr.h;
-    return [[GATE_X, GATE_Y], [endX, GATE_Y], [endX, endY]];
+    const o = origin();
+    const from = snapToRoad(o.u, o.v, null);
+    const to = snapToRoad(0, 0, { x: m.x, y: m.y, w: m.w, h: m.h });
+    const drive = shortestDrive(from, to);
+    if (drive === null) {
+        return null;
+    }
+    const pts = [];
+    if (Math.hypot(from.u - o.u, from.v - o.v) > 1) {
+        pts.push({ u: o.u, v: o.v, road: null });
+    }
+    drive.forEach(function (p) { pts.push(p); });
+    // into the lot: the nearest point of the lot's outline to its driveway
+    const entry = { u: Math.max(m.x, Math.min(m.x + m.w, to.u)), v: Math.max(m.y, Math.min(m.y + m.h, to.v)), road: null };
+    if (Math.hypot(entry.u - to.u, entry.v - to.v) > 0.5) {
+        pts.push(entry);
+    }
+    // drop points that sit on a straight run (same road before and after), so turns are real turns
+    const clean = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+        const last = clean[clean.length - 1];
+        if (Math.hypot(pts[i].u - last.u, pts[i].v - last.v) < 0.5) {
+            continue;
+        }
+        if (clean.length >= 2 && i < pts.length - 1 && pts[i].road !== null && pts[i + 1].road === pts[i].road &&
+            last.road === pts[i].road) {
+            continue;
+        }
+        clean.push(pts[i]);
+    }
+    return clean;
+}
+
+// the trip as drawn on the (stretched) map
+function approachPath(z) {
+    const trip = tripTo(z);
+    return trip === null ? null : trip.map(function (p) { return [WX(p.u), WY(p.v)]; });
+}
+
+// the same trip measured on the ground, in metres
+function approachMetres(z) {
+    const trip = tripTo(z);
+    if (trip === null) {
+        return null;
+    }
+    let len = 0;
+    for (let i = 1; i < trip.length; i++) {
+        len += Math.hypot(trip[i].u - trip[i - 1].u, trip[i].v - trip[i - 1].v);
+    }
+    return Math.round(len * M_PER_UNIT);
+}
+
+// turn-by-turn on the roads: one line per street, with its length and the turn onto it
+function roadSteps(z) {
+    const trip = tripTo(z);
+    if (trip === null) {
+        return [];
+    }
+    const legs = [];
+    for (let i = 1; i < trip.length; i++) {
+        const a = trip[i - 1], b = trip[i];
+        const len = Math.hypot(b.u - a.u, b.v - a.v) * M_PER_UNIT;
+        const key = b.road === null ? (i === trip.length - 1 ? "lot" : "join") : b.road;
+        const dir = [Math.sign(Math.round(b.u - a.u)), Math.sign(Math.round(b.v - a.v))];
+        if (legs.length && legs[legs.length - 1].key === key) {
+            legs[legs.length - 1].len += len;
+        } else {
+            legs.push({ key: key, len: len, dir: dir });
+        }
+    }
+    if (legs.length > 1 && legs[0].key !== "join" && legs[0].key !== "lot" && legs[0].len < 10) {
+        legs.shift();   // starting a few metres up a side street is not a step worth reading
+    }
+    const compass = function (d) {
+        return d[1] < 0 ? "north" : d[1] > 0 ? "south" : d[0] > 0 ? "east" : "west";
+    };
+    const out = [];
+    legs.forEach(function (leg, i) {
+        const m = Math.max(5, Math.round(leg.len / 5) * 5);
+        if (leg.key === "join") {
+            out.push("Make your way to " + roadName(ROAD_LINES[legs[i + 1] ? legs[i + 1].key : 0]) + " (about " + m + " m).");
+        } else if (leg.key === "lot") {
+            out.push((i > 0 ? "Turn " + turnWord(legs[i - 1].dir, leg.dir) + " into " : "Drive into ") + lotName(z) + ".");
+        } else if (i === 0 || legs[i - 1].key === "join") {
+            out.push("Head " + compass(leg.dir) + " on " + roadName(ROAD_LINES[leg.key]) + " for about " + m + " m.");
+        } else {
+            out.push("Turn " + turnWord(legs[i - 1].dir, leg.dir) + " onto " + roadName(ROAD_LINES[leg.key]) +
+                     " and go about " + m + " m.");
+        }
+    });
+    return out;
 }
 
 function totalMeters(pts) {
@@ -2532,15 +2862,13 @@ function stepsFor(st) {
     const rowA = aisle.rowA.split(":").pop();
     const rowB = aisle.rowB ? aisle.rowB.split(":").pop() : null;
     const between = rowB ? "between rows " + rowA + " and " + rowB : "beside row " + rowA;
-    const steps = ["Start at the Main Gate (N Woodland Blvd and E Michigan Ave)."];
+    const o = origin();
+    const steps = [o.atGate ? "Start at the Main Gate (N Woodland Blvd and E Michigan Ave)."
+                            : "Start from where you are."];
 
-    const ap = approachPath(st.zone);
-    if (ap) {
-        const along = unit(ap[0], ap[1]);
-        const toLot = unit(ap[1], ap[2]);
-        steps.push("Head " + (along[0] > 0 ? "east" : "west") + " on E Michigan Ave toward " +
-                   lotName(st.zone) + ".");
-        steps.push("Turn " + turnWord(along, toLot) + " toward the " + lotName(st.zone) + " entrance.");
+    const drive = roadSteps(st.zone);
+    if (drive.length) {
+        drive.forEach(function (line) { steps.push(line); });
     } else {
         steps.push("Drive to the " + lotName(st.zone) + " entrance.");
     }
@@ -2589,7 +2917,7 @@ function drawMapRoute() {
         drawCloseup();
         return;  // a lot with no pin on the picture has no drawable drive; its window still works
     }
-    const endY = pts[2][1];
+    const endX = pts[pts.length - 1][0], endY = pts[pts.length - 1][1];
     const d = roundedPath(pts, 40);
 
     const g = el("g", { "class": route.started ? "route-g" : "route-g preview" }, routeLayer);
@@ -2598,10 +2926,10 @@ function drawMapRoute() {
     el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 12,
                  "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
 
-    el("circle", { cx: GATE_X, cy: GATE_Y, r: 14, fill: "#ffffff", stroke: "#1a73e8",
+    el("circle", { cx: pts[0][0], cy: pts[0][1], r: 14, fill: "#ffffff", stroke: "#1a73e8",
                    "stroke-width": 6 }, routeLayer);
 
-    const e = el("g", { transform: "translate(" + pts[2][0] + " " + endY + ")" }, routeLayer);
+    const e = el("g", { transform: "translate(" + endX + " " + endY + ")" }, routeLayer);
     el("circle", { cx: 0, cy: 0, r: 20, fill: "#1a73e8", stroke: "#ffffff",
                    "stroke-width": 4 }, e);
     el("text", { x: 0, y: 8, "text-anchor": "middle", fill: "#ffffff", "font-size": 22,
@@ -2628,33 +2956,35 @@ function drawCloseup() {
         closeSvg.removeChild(closeSvg.firstChild);
     }
 
-    if (route === null) {
+    const o = origin();
+    if (route === null && o.atGate) {
         box.classList.remove("show");
         return;
     }
     box.classList.add("show");
-    titleEl.textContent = "You are here \u00b7 Main Gate";
+    titleEl.textContent = o.atGate ? "Starting at the Main Gate" : "You are here";
 
     // DK-3: the picked stall's own age, so the close-up says how fresh the
     // claim is, not just where the gate is
-    const routeAge = stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
-    ageEl.textContent = routeAge ? "Your spot's last update: " + routeAge : "";
+    const routeAge = route !== null && stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
+    ageEl.textContent = routeAge ? "Your spot's last update: " + routeAge
+                      : (o.atGate ? "" : "Location accurate to about " + Math.round(me.acc) + " m");
 
     const HALF = 130;
-    const x0 = GATE_X - HALF;
-    const x1 = GATE_X + HALF;
-    const y0 = GATE_Y - HALF * 0.8;
-    const y1 = GATE_Y + HALF * 0.8;
+    const x0 = o.x - HALF;
+    const x1 = o.x + HALF;
+    const y0 = o.y - HALF * 0.8;
+    const y1 = o.y + HALF * 0.8;
 
     closeSvg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
 
     el("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: "#cfe3c1" }, closeSvg);
 
-    // the two roads that cross at the gate (Woodland Blvd and Michigan Ave)
-    el("rect", { x: x0, y: GATE_Y - ROAD_HALF, width: x1 - x0, height: ROAD_HALF * 2,
-                 fill: "#9aa0a6" }, closeSvg);
-    el("rect", { x: GATE_X - ROAD_HALF, y: y0, width: ROAD_HALF * 2, height: y1 - y0,
-                 fill: "#9aa0a6" }, closeSvg);
+    // the real roads around the start point, copied from the map
+    roadLayer.querySelectorAll("rect").forEach(function (r) {
+        el("rect", { x: r.getAttribute("x"), y: r.getAttribute("y"), width: r.getAttribute("width"),
+                     height: r.getAttribute("height"), fill: "#9aa0a6" }, closeSvg);
+    });
 
     // any nearby buildings, close enough to show up in this tight a crop
     BUILDINGS.forEach(function (b) {
@@ -2668,18 +2998,27 @@ function drawCloseup() {
         });
     });
 
-    // the gate marker itself
-    el("circle", { cx: GATE_X, cy: GATE_Y, r: 10, fill: "#ffffff", stroke: "#14532d",
-                   "stroke-width": 4 }, closeSvg);
+    // the start point itself: the gate, or you
+    if (o.atGate) {
+        el("circle", { cx: o.x, cy: o.y, r: 10, fill: "#ffffff", stroke: "#14532d", "stroke-width": 4 }, closeSvg);
+    } else {
+        el("circle", { cx: o.x, cy: o.y, r: Math.max(12, meRadius()), fill: "#1a73e8", opacity: 0.15 }, closeSvg);
+        el("circle", { cx: o.x, cy: o.y, r: 9, fill: "#1a73e8", stroke: "#ffffff", "stroke-width": 3 }, closeSvg);
+    }
+    if (route === null) {
+        return;
+    }
 
-    // the start of the route, leaving the gate
+    // the start of the route, leaving the start point
     const st = stalls[route.id];
     const m = markerFor(st.zone);
     // the first leg of the drive, so the inset points the way the route actually leaves the gate
     const ap = approachPath(st.zone);
-    const east = ap === null || ap[1][0] >= GATE_X;
-    const firstLeg = [east ? Math.min(x1, GATE_X + HALF) : Math.max(x0, GATE_X - HALF), GATE_Y];
-    const d = roundedPath([[GATE_X, GATE_Y], firstLeg], 10);
+    // the real route, along the roads; the inset's frame crops it to the part around you
+    if (ap === null) {
+        return;
+    }
+    const d = roundedPath(ap, 10);
     el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 8,
                  "stroke-linecap": "round" }, closeSvg);
     el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 4,
@@ -2687,8 +3026,7 @@ function drawCloseup() {
                  "class": route.started ? "" : "route-flow" }, closeSvg);
 
     el("text", { x: x0 + 8, y: y0 + 16, "font-size": 11, "font-weight": "bold",
-                 fill: "#14532d" }, closeSvg, "Heading " + (east ? "east" : "west") + " to " +
-                 (m ? lotName(st.zone) : "the lot"));
+                 fill: "#14532d" }, closeSvg, "Route to " + (m ? lotName(st.zone) : "the lot"));
 }
 
 function selectSpot(id) {
@@ -2755,7 +3093,7 @@ function closestLots(cx, cy) {
         return a.d - b.d;
     });
     return list.slice(0, 2).map(function (item, i) {
-        return { z: item.z, rank: i };
+        return { z: item.z, rank: i, metres: Math.round(item.d / S * M_PER_UNIT) };
     });
 }
 
@@ -3024,7 +3362,10 @@ function renderAnswer(a, parent) {
     } else if (a.grain === "zone") {
         box.classList.add("soft");
         main.textContent = "Row " + a.zone_id.split(":").pop() + ": about " + a.free_count + " free";
-        sub.textContent = "As of " + age + ". This lot's sensor is too slow to promise one spot.";
+        // a camera that failed its grade (vision.py's gate) reports rows like a slow sensor; say which it is
+        const cam = a.based_on && String(a.based_on.source).indexOf("camera.") === 0;
+        sub.textContent = "As of " + age + ". " + (cam ? "This lot's camera isn't accurate enough yet to promise one spot."
+                                                       : "This lot's sensor is too slow to promise one spot.");
     } else if (a.grain === "count") {
         box.classList.add("soft");
         main.textContent = "Last count: " + a.free_count + " / " + a.total_count + " free";
@@ -3057,6 +3398,10 @@ function lotCard(item) {
         h("span", "rank r1", "2ND CLOSEST", head);
     }
     h("span", "lot-name", lotName(z), head);
+
+    if (item.rank >= 0 && win.from && item.metres) {
+        h("div", "lot-sub", "About " + item.metres + " m from " + win.from + " (straight line)", box);
+    }
 
     // the same verdict as this lot's pin, so the window and the map always agree
     const pinState = lotPinState(z);
@@ -3200,6 +3545,237 @@ function refreshSelection() {
 """; 
         // Java caps one string constant at 64 KB, so the page is cut into parts at function boundaries.
         String part3 = """
+// ---------- live location ----------
+// why: the driver should not have to know which lot is closest; with their permission the page
+//      finds them, starts routes from them and opens the nearest lot with room, once.
+// boundary: the browser's location stays in this page; it is never sent to the server or stored.
+// ugly: off campus or refused, everything works as before from the Main Gate, and the page says
+//       so; it never pretends the driver is somewhere they are not. Laptops locate by Wi-Fi (often
+//       20-100 m out); the ring shows that uncertainty instead of hiding it.
+let geoState = "asking";      // asking | on | off_campus | denied | unavailable
+let autoOpened = false;       // the nearest lot opens by itself once per visit, not on every move
+const meLayer = el("g", { "pointer-events": "none" }, svg);
+const CAMPUS_MARGIN = 40;     // picture units (~70 m) past the drawing's edge still count as campus
+
+function meRadius() {
+    const r = me.acc / M_PER_UNIT;
+    return Math.abs(WX(me.u + r) - WX(me.u - r)) / 2;
+}
+
+function metresToLot(z) {
+    const m = markerFor(z);
+    if (me === null || !me.onCampus || !m) {
+        return null;
+    }
+    return unitsToMetres(me.u, me.v, m.x + m.w / 2, m.y + m.h / 2);
+}
+
+function drawMe() {
+    while (meLayer.firstChild) {
+        meLayer.removeChild(meLayer.firstChild);
+    }
+    if (me === null || !me.onCampus) {
+        return;
+    }
+    const x = WX(me.u), y = WY(me.v);
+    el("circle", { cx: x, cy: y, r: Math.max(16, meRadius()), "class": "me-ring" }, meLayer);
+    el("circle", { cx: x, cy: y, r: 12, "class": "me-pulse" }, meLayer);
+    el("circle", { cx: x, cy: y, r: 12, "class": "me-dot" }, meLayer);
+}
+
+// spots in a lot that a live camera sees free right now and that suit the car: these can be promised
+function guaranteedSpots(z) {
+    return z.ids.filter(function (id) {
+        const info = stallInfo[id];
+        return info && info.state === "free" && !info.held && typeAllowed(id) &&
+               (info.cadence_class === "continuous" || info.cadence_class === "near_live");
+    }).length;
+}
+
+// why: the driver gets the nearest lot where a spot can be promised (a live camera sees it free), and
+//      is told about a closer lot that seems to have room but only through a slow sensor, without
+//      being steered to that gamble.
+// boundary: reads the same status as the pins; distances from the real (unstretched) positions.
+// ugly: if no lot has a guaranteed spot, the nearest lot with room leads, clearly marked as not guaranteed.
+function lotSuggestions() {
+    let sure = null, room = null, any = null;
+    zones.forEach(function (z) {
+        const d = metresToLot(z), st = lotPinState(z);
+        if (d === null || st === null) {
+            return;
+        }
+        const g = guaranteedSpots(z);
+        if (any === null || d < any.d) {
+            any = { z: z, d: d, sure: false, room: false };
+        }
+        if (g > 0 && (sure === null || d < sure.d)) {
+            sure = { z: z, d: d, sure: true, room: true, n: g };
+        }
+        if ((st.cls === "p-plenty" || st.cls === "p-filling") && (room === null || d < room.d)) {
+            room = { z: z, d: d, sure: g > 0, room: true };
+        }
+    });
+    const lead = sure || room || any;
+    const closer = sure && room && !room.sure && room.d < sure.d ? room : null;
+    return { lead: lead, closer: closer };
+}
+
+// kept for the parts that want one answer: the lot we would send the driver to
+function nearestLot() {
+    return lotSuggestions().lead;
+}
+
+// the close-up folds to its title bar; the choice is remembered in this browser (and only here)
+let closeupCollapsed = false;
+try {
+    closeupCollapsed = window.localStorage.getItem("parkfind.closeupCollapsed") === "1";
+} catch (e) {
+    closeupCollapsed = false;
+}
+document.getElementById("closeup").classList.toggle("collapsed", closeupCollapsed);
+document.getElementById("closeupHead").addEventListener("click", function () {
+    closeupCollapsed = !closeupCollapsed;
+    document.getElementById("closeup").classList.toggle("collapsed", closeupCollapsed);
+    try {
+        window.localStorage.setItem("parkfind.closeupCollapsed", closeupCollapsed ? "1" : "0");
+    } catch (e) {
+        // storage blocked: the choice lasts for this visit only
+    }
+});
+
+// collapsed or open: the driver's choice, remembered in this browser (and only here)
+let meCollapsed = false;
+try {
+    meCollapsed = window.localStorage.getItem("parkfind.meCollapsed") === "1";
+} catch (e) {
+    meCollapsed = false;   // storage blocked (private window): just start open
+}
+
+function toggleMeCard() {
+    meCollapsed = !meCollapsed;
+    try {
+        window.localStorage.setItem("parkfind.meCollapsed", meCollapsed ? "1" : "0");
+    } catch (e) {
+        // nothing to do: the choice lasts for this visit only
+    }
+    renderMeCard();
+}
+
+const ME_PEEK = { on: "on campus", off_campus: "off campus", denied: "off", unavailable: "unavailable",
+                  asking: "finding you\u2026" };
+
+function renderMeCard() {
+    let card = document.getElementById("meCard");
+    while (card.firstChild) {
+        card.removeChild(card.firstChild);
+    }
+    card.classList.toggle("on", geoState === "on");
+    card.classList.toggle("collapsed", meCollapsed);
+    // the header is all a collapsed card shows: dot, "Live location", a one-word state, the arrow
+    const head = h("div", "me-head", undefined, card);
+    h("span", "me-icon", undefined, head);
+    const title = h("span", "me-title", "Live location", head);
+    h("span", "me-peek", ME_PEEK[geoState] || "", title);
+    const arrow = h("button", "me-arrow", "\u25BC", head);
+    arrow.title = meCollapsed ? "Show details" : "Hide details";
+    head.addEventListener("click", toggleMeCard);
+    const body = h("div", "me-body", undefined, card);
+    card = body;   // everything below goes in the part that drops down
+    const text = h("div", "me-text", undefined, card);
+    if (geoState === "on") {
+        const sug = lotSuggestions(), n = sug.lead;
+        if (n === null) {
+            h("b", undefined, "You're on campus", text);
+            text.appendChild(document.createTextNode("No lot to suggest right now."));
+        } else {
+            h("b", undefined, (n.sure ? "Nearest guaranteed spot: " : (n.room ? "Nearest lot with room (not guaranteed): "
+                              : "Nearest lot (none has room): ")) + lotName(n.z), text);
+            text.appendChild(document.createTextNode("About " + n.d + " m from you · " +
+                             (n.sure ? n.n + " seen free by its camera" : lotPinState(n.z).label + " free")));
+            const go = h("button", "btn", "Open", card);
+            go.addEventListener("click", function () { openNearest(n); });
+        }
+        if (sug.closer) {
+            // the closer lot exists, but its sensor is too slow to promise a spot: say so, don't push it
+            const c = sug.closer;
+            const alt = h("div", "me-alt", undefined, text);
+            alt.appendChild(document.createTextNode("Closer: " + lotName(c.z) + " · " + c.d + " m · about " +
+                            lotPinState(c.z).label + " free, slow sensor, not guaranteed "));
+            const link = h("a", "me-link", "open", alt);
+            link.href = "#";
+            link.addEventListener("click", function (ev) { ev.preventDefault(); openNearest(c); });
+        }
+    } else if (geoState === "off_campus") {
+        const km = unitsToMetres(me.u, me.v, GATE_U, GATE_V) / 1000;
+        h("b", undefined, "You're off campus", text);
+        text.appendChild(document.createTextNode("About " + (km < 10 ? km.toFixed(1) : Math.round(km)) +
+                         " km from the Main Gate. Directions start at the Main Gate."));
+    } else if (geoState === "denied") {
+        h("b", undefined, "Location is off", text);
+        text.appendChild(document.createTextNode("Directions start at the Main Gate. Allow location in your browser to start from where you are."));
+    } else if (geoState === "unavailable") {
+        h("b", undefined, "Location isn't available here", text);
+        text.appendChild(document.createTextNode("Directions start at the Main Gate."));
+    } else {
+        h("b", undefined, "Finding where you are…", text);
+        text.appendChild(document.createTextNode("Your browser will ask first. Nothing leaves this page."));
+    }
+}
+
+function openNearest(n) {
+    openForLot(n.z);
+    win.sub = (n.sure ? "The closest lot to you where a spot is seen free right now"
+               : (n.room ? "The closest lot to you with room (its sensor is slow, so not guaranteed)"
+                         : "The closest lot to you (none has room right now)")) + ", about " + n.d + " m away.";
+    winSub.textContent = win.sub;
+}
+
+function onFix(pos) {
+    const g = geoToPic(pos.coords.latitude, pos.coords.longitude);
+    const inside = g.u > -CAMPUS_MARGIN && g.u < 690 + CAMPUS_MARGIN && g.v > -CAMPUS_MARGIN && g.v < 736 + CAMPUS_MARGIN;
+    me = { u: g.u, v: g.v, acc: pos.coords.accuracy || 50, onCampus: inside };
+    geoState = inside ? "on" : "off_campus";
+    drawMe();
+    renderMeCard();
+    renderLotList();
+    if (route !== null) {
+        drawMapRoute();   // a trip in progress now starts from the driver
+    } else {
+        drawCloseup();
+    }
+    maybeOpenNearest();
+}
+
+// The nearest lot opens by itself once, and only when both are known: where the driver is AND
+// what the lots look like. Location can arrive before the first parking data; "none has room"
+// on no data at all would be a guess, so we wait for whichever comes second.
+function maybeOpenNearest() {
+    if (autoOpened || me === null || !me.onCampus || !liveOk || winOpen || route !== null) {
+        return;
+    }
+    autoOpened = true;
+    const n = nearestLot();
+    if (n) {
+        openNearest(n);
+    }
+}
+
+function onGeoError(err) {
+    geoState = err && err.code === 1 ? "denied" : (me !== null ? geoState : "unavailable");
+    renderMeCard();
+}
+
+function startLocation() {
+    renderMeCard();
+    if (!navigator.geolocation || !window.isSecureContext) {
+        geoState = "unavailable";   // browsers share location only over HTTPS or on localhost
+        renderMeCard();
+        return;
+    }
+    navigator.geolocation.watchPosition(onFix, onGeoError,
+                                        { enableHighAccuracy: true, maximumAge: 10000, timeout: 20000 });
+}
+
 const side = document.getElementById("side");
 
 function clearSide() {
@@ -3581,13 +4157,14 @@ raiseLotPins();
 renderTopBar();
 updateLotPins();
 fetchStatus();  // first poll last: it reads the tab (filter), declared above
+startLocation();
 
 </script>
 
 </body>
 </html>
 """;
-        String page = part1 + part2 + part3;
+        String page = part1 + part2 + part2b + part3;
 
         return page.replace("__LAYOUT_JSON__", buildLayoutJson(layout));
     }

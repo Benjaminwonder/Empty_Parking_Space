@@ -192,3 +192,78 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
           Fixed on the way: Flagler's lot label sat on Flagler Hall and Elizabeth Hall; Edmunds Center's on its building;
           the Elizabeth Hall pin covered the "Flagler Hall" name.
   checked: 7 overlaps before, 0 after, at 1366×768, 1600×900, 1920×1080; no side changes over 20 s of live updates.
+
+2026-10-13 · live location · edited DK file at the lead's request
+  georeference: five road crossings read off Google Maps by BD (Woodland & Michigan, Woodland & Pennsylvania, Amelia &
+          University, Garfield & Minnesota, Amelia & Ohio) fitted to the drawing: every point within ~1 m, each predicted
+          from the other four within 4 m; north-up to 0.2°; 1 picture unit ≈ 1.81 m. In the page as GEO / geoToPic().
+  landed (DK file, by BD): with permission (watchPosition), a blue dot + accuracy ring; routes, directions and the close-up
+          start from the driver when on campus (origin()), else from the Main Gate; a location card heads the right column
+          (nearest lot with room + distance, or off campus with km to the gate, or location off); lot list shows metres
+          from you; the nearest lot with room opens by itself once, only after both location and live data are in;
+          building windows quote real straight-line metres again ("About 241 m from the CUB").
+          Location stays in the browser: never sent to the server, never stored.
+          The right column scrolls by itself on short screens instead of the page.
+  checked: virtual driver by the CUB (opens Lot 08, 212 m), moving driver, route from the driver, off campus 3.2 km north,
+           location refused; page walk, layout at three sizes, claims with no-show notice.
+  note: browsers share location only over HTTPS or on localhost; hosting must be HTTPS for phones.
+  → DK: origin(), drawMe(), renderMeCard() are the pieces your live map will need to keep.
+
+2026-10-13 · simulator: a campus day, not a frozen morning; collapsible location card
+  why: from ~9:00 to 11:45 the whole campus saw only 3–10 stall changes per 15 min (none at all 10:00–10:15):
+       75% of drivers stayed 4–8 h, arrivals all but stopped after 10 a.m., so lots filled and the map looked stuck.
+  landed: sim.py — arrivals continue all day (26/h per 120 stalls until 3 p.m.) and bunch in the 15 min before each hour;
+          half the drivers are class-hoppers who leave at :50–:59 after 1–3 classes, 20% stay half a day, 30% all day.
+          Result: ~55 changes per half hour around each class change, ~15 between; every lot changes at least every
+          25–40 min of campus time (the two smallest about hourly); campus free count moves between ~50 and 85 of 200.
+  landed (DK file, by BD): the location card collapses to one bar ("Live location · on campus" + arrow); the arrow drops
+          the details down again; the choice is remembered in the browser.
+  checked: guidance (no violations), all 12 claim tests on the new day, page walk, location cases, layout at three sizes.
+  → DI: feeds are bigger in the middle of the day now; nothing in the shape changed.
+  → everyone: rerun `python sim.py --minutes 900` to get the new day.
+
+2026-10-13 · launcher (V-5) · new file run.py
+  landed: run.py — `python run.py` makes a day of data if missing (--fresh for a new one), starts parkfind.server and
+          the Java page as child processes, waits until each answers, opens the browser, prints a live board every 10 s,
+          restarts the data server from the morning when the recorded day ends (claims clear on that loop), and stops
+          every child on Ctrl+C or if one of them dies. Refuses to start if 8765/8085 are taken, and says why.
+          Logs: out/logs/server.log, out/logs/page.log (out/ is gitignored).
+  checked: full day at 600x with the loop and Ctrl+C (no processes left behind); busy-port refusal.
+  docs: README "See it in the browser" leads with python run.py; BRIDGES lists run.py in BD's lane.
+  → DI, DK: nothing changes in your files; the three manual commands still work.
+
+2026-10-13 · routes along roads; guaranteed-first suggestions; close-up folds · edited DK file at the lead's request
+  landed (DK file, by BD):
+    routes  — ROAD_LINES (every drawn road's centreline, picture units) → a network of crossings and road pieces;
+              Dijkstra finds the shortest drive in metres (shortestDrive, tripTo). Start snaps to the nearest road,
+              the end is where the lot meets its road. Drawn through WX/WY, so the route stays on the asphalt.
+              Directions name the streets ("Turn right onto E Michigan Ave and go about 255 m").
+              The unlabelled connector by Rinker Field is Bert Fish Dr on Stetson's map.
+              CLOSED = [] holds stretches cars can't use; one line each, and every route avoids them.
+              Checked: 9 lots × 2 starts, every middle segment lies on a road centreline.
+    location card — leads with the nearest lot where a live camera sees a free spot for this car (guaranteed);
+              a closer slow-sensor lot with room shows underneath as "not guaranteed"; auto-open picks the guaranteed one.
+    close-up — folds to its title bar with an arrow (remembered); shows the real route around you.
+  note: page is now part1 / part2 / part2b / part3 (Java's 64 KB per string).
+  open: which drawn road stretches are not drivable (e.g. University or Minnesota between Woodland and Amelia).
+
+2026-10-13 · BD-10: three lots on real photos (PKLot) · new pklot_cameras.py, cameras/, vision.py rewritten
+  landed: pklot_cameras.py (stdlib) — PKLot labels → cameras/sage.json (UFPR05, Fri 2013-02-22), cameras/libn.json
+          (PUCPR, Thu 2012-11-08), cameras/west1.json (UFPR04, Tue 2013-01-22): stall map (Stetson stall ← PKLot space,
+          the spaces that change most on the tuning days), tuning photos with labels, replayed photos (labels kept for
+          grading only). Photos keep their clock time on the replay day (2026-09-21).
+  landed: vision.py — each stall's empty look (median of tuning photos labelled empty), then two numbers per stall
+          (difference from empty, edge detail) → one logistic model per camera; caution set on the tuning days by
+          learning on one day and reading another (wrong "free" ≤ 5%); grade printed and saved (out/vision/<lot>.grade.json).
+          Gate: near_live only if the replayed day's wrong-"free" ≤ 5%, else periodic_snapshot (rows and counts).
+          Grades: Sage 99.4% right / 2.5% wrong free → passes; Flagler 99.9% / 0.0% → passes;
+                  Michigan Ave 94.4% / 20.2% → fails (rows only), even after adding a cloudy tuning day.
+          The first baseline (edge energy alone) scored 57% on Sage with 68% wrong "free"; it is gone.
+  landed: sim.py --skip <lots> (no simulated sensor there; World still turns so other lots' days are unchanged;
+          truth.json lists camera_lots); run.py reads cameras with photos on this machine, simulates the rest,
+          merges by observed_at into out/latest/feed.jsonl, prints each camera's grade at start.
+  landed (DK file, by BD): a failed-gate camera's row answer says "camera isn't accurate enough yet", not "too slow".
+  checked: merged feed in time order with all 8 sources; Sage/Flagler give stall answers, Michigan Ave rows only,
+           no claim there; page walk, routes, location card on the merged feed.
+  → DI: feed has three new sources (camera.ufpr05/.pucpr/.ufpr04); truth.json "camera_lots" must be skipped in tests.
+  → DK: nothing to change; photo lots look like any other lot, with their source in the answer.
