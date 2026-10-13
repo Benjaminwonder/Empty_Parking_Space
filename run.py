@@ -21,6 +21,7 @@ three commands still work by hand (README, "See it in the browser").
 from __future__ import annotations
 
 import argparse
+import bisect
 import heapq
 import json
 import shutil
@@ -90,6 +91,48 @@ def newer(a: Path, *b: Path) -> bool:
     return a.exists() and all(not x.exists() or a.stat().st_mtime >= x.stat().st_mtime for x in b)
 
 
+LABEL_HOLD = timedelta(minutes=10)  # photos are 5 minutes apart; one missing photo is a gap, not a change
+
+
+def splice_camera_truth(cams: list[dict]) -> None:
+    """why: for a camera lot, the simulator's truth is a World nobody watches; the people's labels on each photo are
+            what was really parked there. Put those in truth.json so tests score the photo lots like every other lot.
+    boundary: reads out/sim/truth.json and the camera files' replay labels; writes out/latest/truth.json only.
+              vision.py never sees this file, and neither does the server: labels stay out of the feed.
+    ugly: between photos the last labels hold for at most LABEL_HOLD; past that (or after the last photo, ~7 p.m.)
+          the lot is left out of that tick, so a scorer skips it instead of grading against a guess.
+    """
+    truth = json.loads((SIM / "truth.json").read_text(encoding="utf-8"))
+    sources = {}
+    if cams:
+        from vision import observed_at   # the same photo clock the feed uses, so truth and readings line up
+    for c in cams:
+        cam = json.loads(c["path"].read_text(encoding="utf-8"))
+        lot = cam["lot_id"]
+        stall_of = {str(s["space_id"]): f"{lot}:{s['stall']}" for s in cam["spaces"]}
+        photos = sorted((datetime.fromisoformat(observed_at(cam, ph).replace("Z", "+00:00")), ph["labels"])
+                        for ph in cam["replay"])
+        times = [t for t, _ in photos]
+        for tick in truth["ticks"]:
+            t = datetime.fromisoformat(tick["t"].replace("Z", "+00:00"))
+            i = bisect.bisect_right(times, t) - 1
+            if i < 0 or t - times[i] > LABEL_HOLD:
+                tick["lots"].pop(lot, None)
+                continue
+            stalls = {stall_of[sid]: ("occupied" if v else "free") for sid, v in photos[i][1].items()}
+            zones: dict[str, dict] = {}
+            for sid, state in stalls.items():
+                z = zones.setdefault(sid.rsplit("-", 1)[0], {"free": 0, "occupied": 0, "total": 0})
+                z[state] += 1
+                z["total"] += 1
+            free = sum(1 for v in stalls.values() if v == "free")
+            tick["lots"][lot] = {"free": free, "total": len(stalls), "stalls": stalls, "zones": zones}
+        sources[lot] = f"labels:{cam['camera_id']}"
+    truth["truth_sources"] = {lot: sources.get(lot, "simulator")
+                              for lot in sorted({l for tick in truth["ticks"] for l in tick["lots"]} | set(sources))}
+    (RUN / "truth.json").write_text(json.dumps(truth, separators=(",", ":")), encoding="utf-8")
+
+
 def prepare_data(fresh: bool) -> list[dict]:
     """why: one feed for the server: real photos for the camera lots, the simulator for the rest.
     boundary: runs vision.py per camera and sim.py (skipping camera lots), then merges by observed_at
@@ -123,19 +166,21 @@ def prepare_data(fresh: bool) -> list[dict]:
         finally:
             for f in files:
                 f.close()
-        shutil.copyfile(SIM / "truth.json", RUN / "truth.json")
+    if fresh or not newer(RUN / "truth.json", SIM / "truth.json", *(c["path"] for c in cams)):
+        splice_camera_truth(cams)
     return cams
 
 
 def camera_summary(cams: list[dict]) -> str:
-    """One line per camera lot: what it is and whether it passed its grade (vision.py's gate)."""
+    """One line per camera lot: how well it reads, and what its two gates (vision.py) let it promise."""
     lines = []
     for c in cams:
         g = VISION / f"{c['lot_id']}.grade.json"
         grade = json.loads(g.read_text(encoding="utf-8")) if g.exists() else {}
-        verdict = ("names single spots" if grade.get("cadence") == "near_live" else "rows and counts only")
+        verdict = (f"names {grade.get('trusted', '?')} of {grade.get('stalls', '?')} stalls"
+                   if grade.get("cadence") == "near_live" else "rows and counts only")
         lines.append(f"  {c['lot_id']:8s} photos from {c['camera_id']}: {100 * grade.get('right', 0):.1f}% right, "
-                     f"'free' wrong {100 * grade.get('free_wrong', 0):.1f}% -> {verdict}")
+                     f"named spot taken {100 * grade.get('named_free_wrong', 0):.1f}% -> {verdict}")
     return "\n".join(lines)
 
 

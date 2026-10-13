@@ -68,6 +68,14 @@ The run writes:
 - `out/latest/feed.jsonl`: the sensor reports, one per line (what ParkFind reads)
 - `out/latest/truth.json`: what was really true each tick (tests only)
 
+To check a played day against the truth (photo lots use the people's labels on each photo):
+
+```
+python tests/score_day.py
+```
+
+It prints one row per lot and exits 1 if any lot named a spot that was really taken more than 5% of the time.
+
 Two runs the team uses:
 
 ```
@@ -127,12 +135,28 @@ from you, and the nearest lot with room opens by itself once. Off campus or refu
 starts at the Main Gate instead. Location never leaves the page. Browsers only share location
 over HTTPS or on localhost, so a phone reaching the page through a laptop gets the Main Gate.
 
+The "You are here" close-up is a small navigation view on OpenStreetMap's street map (free, no
+key): street level by default (+/- for about 160 / 290 / 510 m across), you just below the middle so more
+road ahead shows, the next turn in a banner ("400 m · Turn left onto N Amelia Ave"), a P pin for the
+lot (or an edge arrow with its distance), a scale bar, and the nearest landmark outlined and named
+with its distance and direction. It turns: the round buttons turn it, the needle shows north (tap
+it for north-up), and on a phone the extra button turns it with your compass.
+The page asks OpenStreetMap for one fixed set of campus tiles, the same for everyone, and draws
+your dot and route on top: the tile server sees that someone opened Stetson's map (and the
+visitor's IP address, as with any web request), never where you are. If the tiles cannot load,
+our own drawing shows instead.
+
 Three lots run on real photos. PKLot's cameras (real lots, a photo every 5 minutes, every space
 labelled by people) play one weekday each on the Stetson map: Sage · Lot 33, Flagler · Lot 25 and
 Michigan Ave · Lot 42. `vision.py` learns each stall's empty look on other days, reads the replayed
-day, and grades itself against the people's labels. A camera only promises single spots if its
-"free" is wrong at most 1 time in 20 on that unseen day; Sage (99.4% right) and Flagler (99.9%) pass,
-Michigan Ave (94.4%, but 1 in 5 of its "free" calls wrong) does not, so it reports rows and counts.
+day, and grades itself against the people's labels. Two gates decide what a driver is promised.
+Stall by stall, on the tuning days: a stall the camera misreads (Sage's far row D) reports rows only.
+Camera-wide, on the unseen day: the one spot guidance would name must be really free at least 19
+times in 20. Sage names 24 of 32 stalls (named spot taken 1.1%), Flagler 19 of 20 (0.0%); Michigan
+Ave fails (17.2%), so it reports rows and counts. `python tests/score_day.py` checks the whole day.
+
+Each camera's days are kept apart: tuning (learn), validation (choose the model: `vision.py --validate`),
+replayed (what drivers see, and the gate), exam (graded once per final model: `vision.py --exam`).
 With the PKLot download in `data/`, `python pklot_cameras.py` then `python run.py` uses the photos;
 without it, every lot is simulated.
 

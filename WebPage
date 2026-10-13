@@ -400,7 +400,7 @@ svg {
     position: absolute;
     top: 14px;
     right: 14px;
-    width: 260px;
+    width: 320px;
     background: #ffffff;
     border: 1px solid #ddd;
     border-radius: 12px;
@@ -422,7 +422,7 @@ svg {
 
 .closeup svg {
     width: 100%;
-    height: 170px;
+    height: 230px;
     border-radius: 8px;
     background: #cfe3c1;
     cursor: default;
@@ -1197,11 +1197,32 @@ body.show-buildings .bpin { display: inline; }
 .me-card .btn { margin: 0; }
 .me-alt { margin-top: 6px; padding-top: 6px; border-top: 1px dashed #e0e3e5; color: #6b7280; font-size: 12px; }
 .me-link { color: #1a73e8; }
+/* the not-guaranteed lot's name: amber like "Filling up", darker so small text stays readable */
+.me-alt-name { color: #b45309; font-weight: 600; }
 .lot-row .lr-far { color: #6b7280; font-size: 12px; margin-left: 6px; }
 /* the close-up folds to its title bar, like the location card; the arrow brings the picture back */
 .closeup-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; cursor: pointer;
                 user-select: none; }
-.closeup.collapsed svg { display: none; }
+.closeup.collapsed .cu-map, .closeup.collapsed .closeup-landmark { display: none; }
+.cu-map { position: relative; }
+.closeup-landmark { font-size: 11px; color: #5f6368; margin: -2px 0 6px; }
+.closeup-landmark b { color: #b45309; }
+/* turn buttons over the map's top-right corner; the needle shows where north is on the turned map */
+.cu-ctrl { position: absolute; top: 6px; right: 6px; display: flex; flex-direction: column; gap: 4px; }
+.cu-ctrl button { width: 26px; height: 26px; border-radius: 50%; border: 1px solid #dadce0; background: #ffffff;
+                  cursor: pointer; font-size: 15px; line-height: 1; padding: 0; color: #3c4043;
+                  box-shadow: 0 1px 3px rgba(0,0,0,0.2); display: flex; align-items: center; justify-content: center; }
+.cu-ctrl button.on { background: #1a73e8; color: #ffffff; border-color: #1a73e8; }
+.cu-ctrl button[hidden] { display: none; }
+.cu-ctrl button:disabled { opacity: 0.4; cursor: default; }
+/* the next turn, over the top of the map, clear of the buttons on the right */
+.cu-next { position: absolute; top: 6px; left: 6px; right: 40px; display: flex; align-items: center; gap: 8px;
+           background: #14532d; color: #ffffff; border-radius: 8px; padding: 5px 8px; font-size: 12px;
+           box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
+.cu-next[hidden] { display: none; }
+.cu-next-icon { font-size: 20px; line-height: 1; font-weight: bold; min-width: 18px; text-align: center; }
+.cu-next-text b { font-size: 13px; }
+.cu-ctrl svg { width: 18px; height: 18px; background: none; border-radius: 0; }
 .closeup.collapsed .closeup-age { margin-bottom: 0; }
 .closeup.collapsed .me-arrow { transform: rotate(-90deg); }
 .stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
@@ -1253,7 +1274,19 @@ body.show-buildings .bpin { display: inline; }
                 </div>
                 <button class="me-arrow" id="closeupArrow">&#9660;</button>
             </div>
-            <svg id="closeupSvg"></svg>
+            <div class="closeup-landmark" id="closeupLandmark"></div>
+            <div class="cu-map">
+                <svg id="closeupSvg"></svg>
+                <div class="cu-next" id="cuNext" hidden></div>
+                <div class="cu-ctrl">
+                    <button id="cuNorth" title="North up (the needle points north)"><svg viewBox="-10 -10 20 20"><g id="cuNeedle"><path d="M0,-8 L4,5 L0,2 L-4,5 Z" fill="#d93025"/><circle r="1.6" fill="#3c4043"/></g></svg></button>
+                    <button id="cuIn" title="Closer">+</button>
+                    <button id="cuOut" title="Wider">&#8722;</button>
+                    <button id="cuLeft" title="Turn the map left">&#8634;</button>
+                    <button id="cuRight" title="Turn the map right">&#8635;</button>
+                    <button id="cuHeading" title="Turn the map with my phone" hidden>&#9678;</button>
+                </div>
+            </div>
         </div>
 
         <!-- what the lot pin colours mean; the pins themselves are drawn by updateLotPins -->
@@ -1600,8 +1633,8 @@ keepClear(quadBox.x, quadBox.y, quadBox.w, quadBox.h, 0);
 const ROAD_LINES = [];
 
 function road(x, y, w, h, label, vertical, name) {
-    ROAD_LINES.push(vertical ? { v: true, c: x + w / 2, a: y, b: y + h, name: name || label }
-                             : { v: false, c: y + h / 2, a: x, b: x + w, name: name || label });
+    ROAD_LINES.push(vertical ? { v: true, c: x + w / 2, a: y, b: y + h, w: w, name: name || label }
+                             : { v: false, c: y + h / 2, a: x, b: x + w, w: h, name: name || label });
     const r = wRect(x, y, w, h);
     const rect = el("rect", { x: r.x, y: r.y, width: r.w, height: r.h, fill: "#9aa0a6" }, roadLayer);
     if (x === 0 && w === 690) {
@@ -2400,7 +2433,9 @@ const RELEASE_WORDS = {
     no_show: ["Unresponsive, so spot released",
               "No car reached {spot} in time, so it went back to other drivers."],
     no_data: ["Spot released",
-              "The sensor at {spot} went quiet, so we couldn't keep holding it."]
+              "The sensor at {spot} went quiet, so we couldn't keep holding it."],
+    not_seen: ["We never saw your car",
+               "The camera never saw a car at {spot}. If you parked somewhere else, please let us know."]
 };
 
 // why: the driver must hear when a claim ends without them, or they drive to a spot that is no longer theirs.
@@ -2941,93 +2976,379 @@ function drawMapRoute() {
     drawCloseup();
 }
 
-// the close-up inset, top-right of the map. DK note: this shows where the
-// PERSON is (the Main Gate - the only "current location" this app has),
-// not the destination stall. It redraws every time drawMapRoute() does, so
-// it appears as soon as a spot is picked and tracks whichever direction
-// the route leaves the gate in.
+// ---------- the close-up: a street-level map you can turn, zoom and follow ----------
+// why: "You are here" is a navigation view, not an overview: close street-level map, what is ahead at the top,
+//      the next turn in words, where the lot is, and the nearest landmark to check your bearings against.
+// boundary: draws in real (unstretched) picture units. Fetches ONE fixed set of OpenStreetMap tiles covering
+//           campus, the same for every visitor: where you are never decides what is fetched (CONTRACT).
+// ugly: offline, blocked or slow tiles leave our own roads and buildings showing underneath, so the close-up
+//       is never blank. OpenStreetMap asks for credit; it is drawn in the corner.
+const OSM = (function () {
+    const zoom = 18;   // street level: about 0.5 m per tile pixel; campus plus a margin is 11 x 8 = 88 tiles
+    const tile = function (lat, lon) {
+        const n = Math.pow(2, zoom), sin = Math.sin(lat * Math.PI / 180);
+        return { x: (lon + 180) / 360 * n, y: (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * n };
+    };
+    const nw = tile(29.0405, -81.3060), se = tile(29.0310, -81.2930);
+    return { zoom: zoom, x0: Math.floor(nw.x), y0: Math.floor(nw.y), x1: Math.floor(se.x), y1: Math.floor(se.y) };
+})();
+
+// tile-pixel -> lat/lon, measured from the top-left tile of the set
+function osmToGeo(px, py) {
+    const n = Math.pow(2, OSM.zoom);
+    const x = OSM.x0 + px / 256, y = OSM.y0 + py / 256;
+    const m = Math.PI - 2 * Math.PI * y / n;
+    return { lat: 180 / Math.PI * Math.atan(0.5 * (Math.exp(m) - Math.exp(-m))), lon: x / n * 360 - 180 };
+}
+
+// tile pixels -> picture units as a full affine from three corners: our drawing's axes are about 1.7 degrees
+// off square on the ground, so a plain rectangle would put crossings up to 19 m off (within 2 cm this way)
+const OSM_MATRIX = (function () {
+    const w = (OSM.x1 - OSM.x0 + 1) * 256, h = (OSM.y1 - OSM.y0 + 1) * 256;
+    const at = function (px, py) {
+        const g = osmToGeo(px, py);
+        return geoToPic(g.lat, g.lon);
+    };
+    const a = at(0, 0), b = at(w, 0), c = at(0, h);
+    return [(b.u - a.u) / w, (b.v - a.v) / w, (c.u - a.u) / h, (c.v - a.v) / h, a.u, a.v].join(" ");
+})();
+
+let osmTiles = null;   // one <g> holding every tile, made the first time the close-up shows, then reused
+
+function osmLayer() {
+    if (osmTiles === null) {
+        osmTiles = el("g", { transform: "matrix(" + OSM_MATRIX + ")" });
+        for (let tx = OSM.x0; tx <= OSM.x1; tx++) {
+            for (let ty = OSM.y0; ty <= OSM.y1; ty++) {
+                // 256.5 wide: tiles overlap by half a pixel so no hairline seams show between them
+                const img = el("image", { x: (tx - OSM.x0) * 256, y: (ty - OSM.y0) * 256, width: 256.5, height: 256.5,
+                                          preserveAspectRatio: "none" }, osmTiles);
+                img.setAttribute("href", "https://tile.openstreetmap.org/" + OSM.zoom + "/" + tx + "/" + ty + ".png");
+            }
+        }
+    }
+    return osmTiles;
+}
+
+// why: a building you can see from the car tells you which way you face faster than any arrow.
+// boundary: picks from LANDMARKS (the buildings everyone knows), nearest by real distance to the start point.
+// ugly: the compass word is about the ground (north is north), never about how the map is turned.
+function nearestLandmark(u, v) {
+    let best = null;
+    BUILDINGS.forEach(function (b) {
+        if (LANDMARKS.indexOf(b.n) < 0) {
+            return;
+        }
+        b.parts.forEach(function (p) {
+            const cu = p[0] + p[2] / 2, cv = p[1] + p[3] / 2, d = Math.hypot(cu - u, cv - v);
+            if (best === null || d < best.d) {
+                best = { b: b, u: cu, v: cv, d: d };
+            }
+        });
+    });
+    return best;
+}
+
+function compassWord(du, dv) {
+    const deg = (Math.atan2(du, -dv) * 180 / Math.PI + 360) % 360;   // v grows southward on the drawing
+    return ["north", "north-east", "east", "south-east", "south", "south-west", "west", "north-west"][Math.round(deg / 45) % 8];
+}
+
+// why: the one line a driver reads at a glance: what to do next, and how far away it is.
+// boundary: reads the same Dijkstra trip as the route (tripTo); the trip always starts where you are now.
+// ugly: a first leg of a few metres (you are just off a road) is folded into the next one, as in roadSteps.
+function nextManeuver(z) {
+    const trip = tripTo(z);
+    if (trip === null || trip.length < 2) {
+        return null;
+    }
+    const legs = [];
+    for (let i = 1; i < trip.length; i++) {
+        const a = trip[i - 1], b = trip[i];
+        const key = b.road === null ? (i === trip.length - 1 ? "lot" : "join") : b.road;
+        const len = Math.hypot(b.u - a.u, b.v - a.v) * M_PER_UNIT;
+        const dir = [Math.sign(Math.round(b.u - a.u)), Math.sign(Math.round(b.v - a.v))];
+        if (legs.length && legs[legs.length - 1].key === key) {
+            legs[legs.length - 1].len += len;
+        } else {
+            legs.push({ key: key, len: len, dir: dir });
+        }
+    }
+    let lead = 0;
+    while (legs.length > 1 && legs[0].len < 10) {
+        lead += legs.shift().len;
+    }
+    const m = Math.max(10, Math.round((lead + legs[0].len) / 10) * 10);
+    if (legs.length === 1) {
+        return { icon: "P", text: "Drive into " + lotName(z), m: m };
+    }
+    const now = legs[0], next = legs[1];
+    const straight = now.dir[0] === next.dir[0] && now.dir[1] === next.dir[1];
+    const word = straight ? "straight" : turnWord(now.dir, next.dir);
+    const icon = word === "left" ? "↰" : word === "right" ? "↱" : "↑";
+    if (now.key === "join") {
+        return { icon: "↑", text: "Join " + roadName(ROAD_LINES[next.key === "lot" ? 0 : next.key]), m: m };
+    }
+    if (next.key === "lot") {
+        return { icon: icon, text: (straight ? "Continue" : "Turn " + word) + " into " + lotName(z), m: m };
+    }
+    return { icon: icon, text: (straight ? "Continue" : "Turn " + word) + " onto " + roadName(ROAD_LINES[next.key]), m: m };
+}
+
+// three widths across the close-up (about 160 / 290 / 510 m); street level first: the view a driver needs
+const CU_ZOOMS = [{ half: 45, bar: 20 }, { half: 80, bar: 50 }, { half: 140, bar: 100 }];
+let cuZoom = 0;
+try {
+    cuZoom = Math.min(2, Math.max(0, parseInt(window.localStorage.getItem("parkfind.cuZoom") || "0", 10) || 0));
+} catch (e) {
+    cuZoom = 0;
+}
+let closeAngle = 0;        // degrees the close-up is turned clockwise; 0 = north up
+let headingMode = false;   // the phone's compass turns the map, so what is ahead is up
+
+// where a ground point lands on the turned close-up (labels are drawn upright there, outside the turned group)
+function turned(u, v, o) {
+    const r = closeAngle * Math.PI / 180, du = u - o.u, dv = v - o.v;
+    return { x: o.u + du * Math.cos(r) - dv * Math.sin(r), y: o.v + du * Math.sin(r) + dv * Math.cos(r) };
+}
+
+function upright(text, x, y, attrs, svg, size) {
+    return el("text", Object.assign({ x: x, y: y, "font-size": size, fill: "#202124", stroke: "#ffffff",
+                                      "stroke-width": size * 0.3, "paint-order": "stroke" }, attrs || {}), svg, text);
+}
+
+// why: something worth finding that is off the edge still gets a mark: an arrow on the edge pointing at it.
+// boundary: draws upright marks into the close-up svg; s is the thing's turned position.
+// ugly: the edge is inset so arrows clear the scale bar and credit, the buttons on the right and the next-turn
+//       banner; when two labels would overlap, the later one steps down until it is clear.
+function edgeMark(s, o, view, label, colour, svg) {
+    const inside = s.x > view.x0 + view.pad && s.x < view.x0 + view.W - view.padR &&
+                   s.y > view.y0 + view.padT && s.y < view.y0 + view.H - view.padB;
+    if (inside) {
+        return false;
+    }
+    const dx = s.x - o.u, dy = s.y - o.v;
+    const k = Math.min(Math.max(1e-6, dx > 0 ? view.x0 + view.W - view.padR - o.u : o.u - view.x0 - view.pad) / Math.max(1e-6, Math.abs(dx)),
+                       Math.max(1e-6, dy > 0 ? view.y0 + view.H - view.padB - o.v : o.v - view.y0 - view.padT) / Math.max(1e-6, Math.abs(dy)));
+    const ex = o.u + dx * k, ey = o.v + dy * k, ang = Math.atan2(dy, dx);
+    const a = view.u;   // one screen pixel in picture units at this zoom
+    // labels never sit on each other: estimate this label's box and step it down until it is clear
+    const anchor = Math.cos(ang) > 0.3 ? "end" : Math.cos(ang) < -0.3 ? "start" : "middle";
+    const lw = label.length * 6.2 * a, lx = ex - Math.cos(ang) * 11 * a;
+    const left = anchor === "end" ? lx - lw : anchor === "start" ? lx : lx - lw / 2;
+    let ly = ey - Math.sin(ang) * 11 * a + 3.5 * a;
+    const hits = function (y) {
+        return view.marks.some(function (m) {
+            return left < m.x + m.w && left + lw > m.x && y - 14 * a < m.y && y > m.y - 14 * a;
+        });
+    };
+    for (let tries = 0; tries < 4 && hits(ly); tries++) {
+        ly += 14 * a;
+    }
+    view.marks.push({ x: left, y: ly, w: lw });
+    el("path", { d: "M" + 9 * a + ",0 L" + (-5 * a) + "," + (-7 * a) + " L" + (-5 * a) + "," + 7 * a + " Z", fill: colour,
+                 stroke: "#ffffff", "stroke-width": 1.5 * a,
+                 transform: "translate(" + ex + " " + ey + ") rotate(" + ang * 180 / Math.PI + ")" }, svg);
+    upright(label, lx, ly, { "text-anchor": anchor, "font-weight": "bold", fill: colour }, svg, 10 * a);
+    return true;
+}
+
+// why: one close-up for every start point: you (live location) or the Main Gate, with or without a route.
+// boundary: draws into #closeup only; the route is tripTo() (the same Dijkstra route as the big map).
+// ugly: the map turns, the words do not: every label is placed at its turned spot and drawn upright. You sit
+//       below the middle, so more of the road ahead (the top) is in view.
 function drawCloseup() {
     const box = document.getElementById("closeup");
-    const titleEl = document.getElementById("closeupTitle");
-    const ageEl = document.getElementById("closeupAge");
-    const closeSvg = document.getElementById("closeupSvg");
-
-    while (closeSvg.firstChild) {
-        closeSvg.removeChild(closeSvg.firstChild);
+    const svg = document.getElementById("closeupSvg");
+    while (svg.firstChild) {
+        svg.removeChild(svg.firstChild);
     }
-
     const o = origin();
     if (route === null && o.atGate) {
         box.classList.remove("show");
         return;
     }
     box.classList.add("show");
-    titleEl.textContent = o.atGate ? "Starting at the Main Gate" : "You are here";
-
-    // DK-3: the picked stall's own age, so the close-up says how fresh the
-    // claim is, not just where the gate is
+    const z = route !== null ? stalls[route.id].zone : null;
+    document.getElementById("closeupTitle").textContent = (o.atGate ? "Starting at the Main Gate" : "You are here") +
+                                                         (z !== null ? " → " + lotName(z) : "");
     const routeAge = route !== null && stallInfo[route.id] ? formatAge(stallInfo[route.id].age_s) : "";
-    ageEl.textContent = routeAge ? "Your spot's last update: " + routeAge
-                      : (o.atGate ? "" : "Location accurate to about " + Math.round(me.acc) + " m");
+    document.getElementById("closeupAge").textContent = routeAge ? "Your spot's last update: " + routeAge
+        : (o.atGate ? "" : "Location accurate to about " + Math.round(me.acc) + " m");
 
-    const HALF = 130;
-    const x0 = o.x - HALF;
-    const x1 = o.x + HALF;
-    const y0 = o.y - HALF * 0.8;
-    const y1 = o.y + HALF * 0.8;
+    const lm = nearestLandmark(o.u, o.v);
+    const lmLine = document.getElementById("closeupLandmark");
+    lmLine.textContent = "";
+    if (lm !== null) {
+        lmLine.appendChild(document.createTextNode("Nearest landmark: "));
+        h("b", undefined, buildingName(lm.b.n), lmLine);
+        lmLine.appendChild(document.createTextNode(", " + Math.max(10, Math.round(lm.d * M_PER_UNIT / 10) * 10) +
+                                                   " m " + compassWord(lm.u - o.u, lm.v - o.v)));
+    }
 
-    closeSvg.setAttribute("viewBox", x0 + " " + y0 + " " + (x1 - x0) + " " + (y1 - y0));
+    // the next turn, in words, over the top of the map
+    const nextEl = document.getElementById("cuNext");
+    const nm = z !== null ? nextManeuver(z) : null;
+    nextEl.hidden = nm === null;
+    if (nm !== null) {
+        nextEl.textContent = "";
+        h("span", "cu-next-icon", nm.icon, nextEl);
+        const t = h("span", "cu-next-text", undefined, nextEl);
+        h("b", undefined, nm.m + " m", t);
+        t.appendChild(document.createTextNode(" · " + nm.text));
+    }
 
-    el("rect", { x: x0, y: y0, width: x1 - x0, height: y1 - y0, fill: "#cfe3c1" }, closeSvg);
+    const zoom = CU_ZOOMS[cuZoom];
+    const rect = svg.getBoundingClientRect();
+    const W = 2 * zoom.half, H = W * ((rect.height || 220) / (rect.width || 320));
+    const u = W / (rect.width || 320);   // one screen pixel, in picture units
+    const view = { x0: o.u - W / 2, y0: o.v - H * 0.62, W: W, H: H, u: u, pad: 14 * u, padR: 40 * u,
+                   padT: (nm !== null ? 50 : 14) * u, padB: 34 * u, marks: [] };
+    svg.setAttribute("viewBox", view.x0 + " " + view.y0 + " " + W + " " + H);
+    el("rect", { x: view.x0 - W, y: view.y0 - H, width: 3 * W, height: 3 * H, fill: "#e8efe0" }, svg);
 
-    // the real roads around the start point, copied from the map
-    roadLayer.querySelectorAll("rect").forEach(function (r) {
-        el("rect", { x: r.getAttribute("x"), y: r.getAttribute("y"), width: r.getAttribute("width"),
-                     height: r.getAttribute("height"), fill: "#9aa0a6" }, closeSvg);
+    const g = el("g", { transform: "rotate(" + closeAngle + " " + o.u + " " + o.v + ")" }, svg);
+    // our own roads and buildings first: they are what shows if the tiles cannot load
+    ROAD_LINES.forEach(function (r) {
+        el("rect", r.v ? { x: r.c - r.w / 2, y: r.a, width: r.w, height: r.b - r.a, fill: "#c4c7cb" }
+                       : { x: r.a, y: r.c - r.w / 2, width: r.b - r.a, height: r.w, fill: "#c4c7cb" }, g);
     });
-
-    // any nearby buildings, close enough to show up in this tight a crop
     BUILDINGS.forEach(function (b) {
         b.parts.forEach(function (p) {
-            const bx = p.drawn.x, by = p.drawn.y, bw = p.drawn.w, bh = p.drawn.h;
-            if (bx + bw < x0 || bx > x1 || by + bh < y0 || by > y1) {
-                return;
-            }
-            el("rect", { x: bx, y: by, width: bw, height: bh, rx: 3, fill: "#ddd2c2",
-                         stroke: "#a99a86", "stroke-width": 1.5 }, closeSvg);
+            el("rect", { x: p[0], y: p[1], width: p[2], height: p[3], rx: 2, fill: "#ddd2c2", stroke: "#a99a86",
+                         "stroke-width": u }, g);
         });
     });
-
-    // the start point itself: the gate, or you
+    g.appendChild(osmLayer());
+    if (lm !== null) {
+        lm.b.parts.forEach(function (p) {
+            el("rect", { x: p[0], y: p[1], width: p[2], height: p[3], rx: 2, fill: "#b45309", "fill-opacity": 0.12,
+                         stroke: "#b45309", "stroke-width": 2.5 * u }, g);
+        });
+    }
+    let dest = null;
+    if (z !== null) {
+        const trip = tripTo(z);
+        if (trip !== null) {
+            dest = trip[trip.length - 1];
+            const d = roundedPath(trip.map(function (p) { return [p.u, p.v]; }), 6 * u);
+            el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 9 * u, "stroke-linecap": "round",
+                         "stroke-linejoin": "round" }, g);
+            el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 5 * u, "stroke-linecap": "round",
+                         "stroke-linejoin": "round", "class": route.started ? "" : "route-flow" }, g);
+        }
+    }
     if (o.atGate) {
-        el("circle", { cx: o.x, cy: o.y, r: 10, fill: "#ffffff", stroke: "#14532d", "stroke-width": 4 }, closeSvg);
+        el("circle", { cx: o.u, cy: o.v, r: 7 * u, fill: "#ffffff", stroke: "#14532d", "stroke-width": 4 * u }, g);
     } else {
-        el("circle", { cx: o.x, cy: o.y, r: Math.max(12, meRadius()), fill: "#1a73e8", opacity: 0.15 }, closeSvg);
-        el("circle", { cx: o.x, cy: o.y, r: 9, fill: "#1a73e8", stroke: "#ffffff", "stroke-width": 3 }, closeSvg);
-    }
-    if (route === null) {
-        return;
+        el("circle", { cx: o.u, cy: o.v, r: Math.max(10 * u, me.acc / M_PER_UNIT), fill: "#1a73e8", opacity: 0.15 }, g);
+        if (headingMode) {
+            // facing: the map is turned so what is ahead is up, so the beam points up on screen
+            el("path", { d: "M" + o.u + "," + o.v + " L" + (o.u - 9 * u) + "," + (o.v - 26 * u) + " A" + 27 * u + "," +
+                         27 * u + " 0 0 1 " + (o.u + 9 * u) + "," + (o.v - 26 * u) + " Z", fill: "#1a73e8", opacity: 0.3 }, svg);
+        }
+        el("circle", { cx: o.u, cy: o.v, r: 7 * u, fill: "#1a73e8", stroke: "#ffffff", "stroke-width": 3 * u }, g);
     }
 
-    // the start of the route, leaving the start point
-    const st = stalls[route.id];
-    const m = markerFor(st.zone);
-    // the first leg of the drive, so the inset points the way the route actually leaves the gate
-    const ap = approachPath(st.zone);
-    // the real route, along the roads; the inset's frame crops it to the part around you
-    if (ap === null) {
-        return;
+    // upright marks: the lot (pin, or an arrow on the edge) and the landmark's name
+    if (dest !== null) {
+        const s = turned(dest.u, dest.v, o);
+        const far = Math.max(10, Math.round(Math.hypot(dest.u - o.u, dest.v - o.v) * M_PER_UNIT / 10) * 10);
+        if (!edgeMark(s, o, view, "P · " + far + " m", "#1b8a3a", svg)) {
+            el("path", { d: "M0,0 C" + (-6 * u) + "," + (-9 * u) + " " + (-9 * u) + "," + (-13 * u) + " " + (-9 * u) + "," +
+                         (-18 * u) + " A" + 9 * u + "," + 9 * u + " 0 1 1 " + 9 * u + "," + (-18 * u) + " C" + 9 * u + "," +
+                         (-13 * u) + " " + 6 * u + "," + (-9 * u) + " 0,0 Z", fill: "#1b8a3a", stroke: "#ffffff",
+                         "stroke-width": 1.5 * u, transform: "translate(" + s.x + " " + s.y + ")" }, svg);
+            el("text", { x: s.x, y: s.y - 14 * u, "font-size": 11 * u, "font-weight": "bold", fill: "#ffffff",
+                         "text-anchor": "middle" }, svg, "P");
+        }
     }
-    const d = roundedPath(ap, 10);
-    el("path", { d: d, fill: "none", stroke: "#ffffff", "stroke-width": 8,
-                 "stroke-linecap": "round" }, closeSvg);
-    el("path", { d: d, fill: "none", stroke: "#1a73e8", "stroke-width": 4,
-                 "stroke-linecap": "round",
-                 "class": route.started ? "" : "route-flow" }, closeSvg);
-
-    el("text", { x: x0 + 8, y: y0 + 16, "font-size": 11, "font-weight": "bold",
-                 fill: "#14532d" }, closeSvg, "Route to " + (m ? lotName(st.zone) : "the lot"));
+    if (lm !== null) {
+        const s = turned(lm.u, lm.v, o), name = buildingShort(lm.b.n);
+        if (!edgeMark(s, o, view, name, "#b45309", svg)) {
+            upright(name, s.x, s.y + 3.5 * u, { "text-anchor": "middle", "font-weight": "bold", fill: "#b45309" }, svg, 10 * u);
+        }
+    }
+    // scale bar, bottom right (left of nothing: the buttons stop above it), and the map credit, bottom left
+    const bx = view.x0 + W - 8 * u, by = view.y0 + H - 8 * u, bl = zoom.bar / M_PER_UNIT;
+    el("path", { d: "M" + (bx - bl) + "," + (by - 4 * u) + " L" + (bx - bl) + "," + by + " L" + bx + "," + by + " L" + bx +
+                 "," + (by - 4 * u), fill: "none", stroke: "#3c4043", "stroke-width": 1.5 * u }, svg);
+    upright(zoom.bar + " m", bx - bl / 2, by - 6 * u, { "text-anchor": "middle", fill: "#3c4043" }, svg, 9 * u);
+    upright("© OpenStreetMap contributors", view.x0 + 4 * u, view.y0 + H - 5 * u, { fill: "#3c4043" }, svg, 8 * u);
+    document.getElementById("cuNeedle").setAttribute("transform", "rotate(" + closeAngle + ")");
+    document.getElementById("cuIn").disabled = cuZoom === 0;
+    document.getElementById("cuOut").disabled = cuZoom === CU_ZOOMS.length - 1;
 }
+
+// why: turn and zoom the close-up by hand, or let the phone's compass keep what is ahead at the top.
+// boundary: changes closeAngle / cuZoom and redraws the close-up; touches nothing else on the page.
+// ugly: compass events arrive dozens of times a second; redraws are capped at five a second. iPhones ask
+//       permission first (on a tap), and a phone held sideways adds its screen angle.
+function turnCloseup(deg) {
+    headingMode = false;
+    document.getElementById("cuHeading").classList.remove("on");
+    closeAngle = deg === null ? 0 : ((closeAngle + deg) % 360 + 360) % 360;
+    drawCloseup();
+}
+
+function zoomCloseup(step) {
+    cuZoom = Math.min(CU_ZOOMS.length - 1, Math.max(0, cuZoom + step));
+    try {
+        window.localStorage.setItem("parkfind.cuZoom", String(cuZoom));
+    } catch (e) {
+        // the zoom simply isn't remembered
+    }
+    drawCloseup();
+}
+
+document.getElementById("cuNorth").addEventListener("click", function () { turnCloseup(null); });
+document.getElementById("cuLeft").addEventListener("click", function () { turnCloseup(-30); });
+document.getElementById("cuRight").addEventListener("click", function () { turnCloseup(30); });
+document.getElementById("cuIn").addEventListener("click", function () { zoomCloseup(-1); });
+document.getElementById("cuOut").addEventListener("click", function () { zoomCloseup(1); });
+
+let headingDrawn = 0;
+function onHeading(e) {
+    let heading = null;
+    if (typeof e.webkitCompassHeading === "number") {
+        heading = e.webkitCompassHeading;           // iPhone: already degrees from north
+    } else if (e.absolute && typeof e.alpha === "number") {
+        heading = 360 - e.alpha;                     // Android: alpha counts the other way
+    }
+    if (!headingMode || heading === null || Date.now() - headingDrawn < 200) {
+        return;
+    }
+    headingDrawn = Date.now();
+    const screenTurn = (screen.orientation && screen.orientation.angle) || 0;
+    closeAngle = ((-(heading + screenTurn)) % 360 + 360) % 360;
+    drawCloseup();
+}
+
+(function () {
+    const btn = document.getElementById("cuHeading");
+    const touch = window.matchMedia && window.matchMedia("(pointer: coarse)").matches;
+    if (!touch || !("DeviceOrientationEvent" in window)) {
+        return;   // a laptop has no compass: the button stays hidden
+    }
+    btn.hidden = false;
+    btn.addEventListener("click", function () {
+        if (headingMode) {
+            turnCloseup(null);
+            return;
+        }
+        const start = function () {
+            headingMode = true;
+            btn.classList.add("on");
+            window.addEventListener("ondeviceorientationabsolute" in window ? "deviceorientationabsolute"
+                                    : "deviceorientation", onHeading);
+        };
+        if (typeof DeviceOrientationEvent.requestPermission === "function") {
+            DeviceOrientationEvent.requestPermission().then(function (r) { if (r === "granted") { start(); } });
+        } else {
+            start();
+        }
+    });
+})();
 
 function selectSpot(id) {
     route = { id: id, started: false, auto: false };
@@ -3699,7 +4020,9 @@ function renderMeCard() {
             // the closer lot exists, but its sensor is too slow to promise a spot: say so, don't push it
             const c = sug.closer;
             const alt = h("div", "me-alt", undefined, text);
-            alt.appendChild(document.createTextNode("Closer: " + lotName(c.z) + " · " + c.d + " m · about " +
+            alt.appendChild(document.createTextNode("Closer: "));
+            h("span", "me-alt-name", lotName(c.z), alt);
+            alt.appendChild(document.createTextNode(" · " + c.d + " m · about " +
                             lotPinState(c.z).label + " free, slow sensor, not guaranteed "));
             const link = h("a", "me-link", "open", alt);
             link.href = "#";
@@ -3831,7 +4154,7 @@ function showRoute() {
 
     if (myClaim !== null && myClaim.stall_id === route.id) {
         const box = add("div", undefined, "claim-box");
-        if (myClaim.phase === "arrived") {
+        if (myClaim.phase === "arrived" || myClaim.phase === "car_seen") {   // car_seen: slice BD-18 asks whose
             h("b", undefined, "Car detected in your spot", box);
             h("div", undefined, "It stays yours until the sensor sees it empty again.", box);
         } else {

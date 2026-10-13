@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 from parkfind.clock import make_clock
 from parkfind import guidance
 from parkfind.claims import ClaimBook, ClaimRefused
+from parkfind.reports import ReportBook, ReportRefused
 from parkfind.lastseen import load_layout, read_feed, status
 
 
@@ -47,26 +48,29 @@ def events_until(feed_path: Path, now):
     return cache["events"][:bisect.bisect_right(cache["times"], now)], cache["rejected"]
 
 
-def current_status(run, layout, now):
+def current_status(run, layout, now, reports=None):
     """
-    why: One place that turns the feed into status at a moment, shared by views and claims.
-    boundary: Reads validated sensor events and SK-LAYOUT, never simulator truth.
-    ugly: Claims are not in here; they are laid on top by the claim book, never written into the feed.
+    why: One place that turns the feed (and drivers' reports) into status at a moment, shared by views and claims.
+    boundary: Reads validated sensor events, live driver reports (same event shape) and SK-LAYOUT, never simulator truth.
+    ugly: Claims are not in here; they are laid on top by the claim book. Reports are events, so lastseen treats
+          them like any sensor: the newest claim per stall or row wins, and a report never outlives its ttl.
     """
     events, rejected_lines = events_until(run / "feed.jsonl", now)
+    if reports is not None:
+        events = events + reports.events(now)
     snapshot = status(events, layout, now)
     snapshot["rejected_lines"] = rejected_lines
     return snapshot
 
 
-def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None):
+def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None, reports=None):
     """
     why: Build the current SK-VIEW response for a frontend request.
     boundary: Sensor status first, then claims on top, then guidance, so guidance never names a held spot.
     ugly: answer is null until the page names a lot (nearest to the driver, or a clicked pin).
     """
     now = clock()
-    snapshot = current_status(run, layout, now)
+    snapshot = current_status(run, layout, now, reports)
     claim_news = book.overlay(snapshot, now, driver_id)
 
     answer = guidance.answer(snapshot, layout, now, vehicle_class, driver_id, lot_id)
@@ -83,10 +87,10 @@ def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None):
 PAGE_ORIGIN = "http://localhost:8085"
 
 
-def make_handler(run, layout, clock, book):
+def make_handler(run, layout, clock, book, reports=None):
     """
-    why: Bind the selected feed, layout, clock and claim book to each HTTP request.
-    boundary: GET /view (SK-VIEW), POST /claim and POST /release (SK-CLAIM). Nothing else.
+    why: Bind the selected feed, layout, clock, claim book and driver reports to each HTTP request.
+    boundary: GET /view (SK-VIEW); POST /claim, /release, /parked, /taken (SK-CLAIM); POST /report (SK-REPORT).
     ugly: a bad vehicle_class or lot_id is a 400, never a guess at what was meant.
     """
 
@@ -113,8 +117,8 @@ def make_handler(run, layout, clock, book):
 
         def do_POST(self):
             """
-            why: A driver claims a spot or lets go of one.
-            boundary: Changes only the claim book; the feed and the sensors' status are never written.
+            why: A driver claims a spot, lets go of one, says they parked or that their spot was taken, or reports a row.
+            boundary: Changes only the claim book and the report book (memory); the recorded feed is never written.
             ugly: Two drivers can press Claim at the same instant; the book's lock lets exactly one win, the other gets 409.
             """
             request = urlsplit(self.path)
@@ -135,7 +139,7 @@ def make_handler(run, layout, clock, book):
                                           "message": f"That is an {kind.upper()} spot. Pick the {kind.upper()} tab if it is for you."})
                     return
                 try:
-                    claim = book.claim(stall_id, driver_id, current_status(run, layout, now), now)
+                    claim = book.claim(stall_id, driver_id, current_status(run, layout, now, reports), now)
                 except ClaimRefused as refused:
                     self._send_json(409, {"code": refused.code, "message": refused.message})
                     return
@@ -143,6 +147,28 @@ def make_handler(run, layout, clock, book):
             elif request.path == "/release":
                 book.release(driver_id, now)
                 self._send_json(200, {"my_claim": None})
+            elif request.path == "/parked":
+                try:
+                    said = book.parked(driver_id, current_status(run, layout, now, reports), now, reports)
+                except ClaimRefused as refused:
+                    self._send_json(409, {"code": refused.code, "message": refused.message})
+                    return
+                self._send_json(200, said)
+            elif request.path == "/taken":
+                book.taken(driver_id, now)
+                self._send_json(200, {"my_claim": None})
+            elif request.path == "/report":
+                try:
+                    free_count = int(params.get("free_count", [""])[0])
+                    ev = reports.row_count(driver_id, params.get("zone_id", [""])[0], free_count, layout,
+                                           current_status(run, layout, now, reports), now)
+                except ValueError:
+                    self._send_json(400, {"code": "bad_count", "message": "free_count must be a whole number."})
+                    return
+                except ReportRefused as refused:
+                    self._send_json(409, {"code": refused.code, "message": refused.message})
+                    return
+                self._send_json(200, {"report": ev.to_json()})
             else:
                 self.send_error(404, "Not found")
 
@@ -164,7 +190,7 @@ def make_handler(run, layout, clock, book):
             lot_id = params.get("lot_id", [None])[0]
 
             try:
-                view = build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id)
+                view = build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id, reports)
             except ValueError as problem:  # unknown vehicle_class or lot_id: the caller's mistake, not ours
                 self.send_error(400, str(problem))
                 return
@@ -215,7 +241,7 @@ def main():
     start = args.now or first_observed(args.run / "feed.jsonl")
     clock = make_clock(start=start, speed=args.speed)
     print(f"Replay starts at {start}, speed {args.speed}", flush=True)
-    handler = make_handler(args.run, layout, clock, ClaimBook())
+    handler = make_handler(args.run, layout, clock, ClaimBook(), ReportBook())
 
     server = ThreadingHTTPServer(("localhost", args.port), handler)
 

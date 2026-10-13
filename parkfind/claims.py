@@ -6,14 +6,19 @@ A claim is a promise from a driver, not something a sensor saw, so it never ente
 feed and never becomes an OccupancyEvent. It lives in the server's memory (a restart
 clears it) and is laid over the status just before the view is built.
 
-The life of a claim (rules agreed 2026-10-12):
+The life of a claim (rules agreed 2026-10-12, arrival rules 2026-10-13):
   held      claimed while the spot was seen free; nobody else is sent there.
-  arrived   a sensor saw the spot occupied after the claim was made: the driver's car.
+  car_seen  a sensor saw a car in the spot after the claim was made. A camera cannot tell whose car:
+            the page decides with the driver's location (which never reaches us), or asks "Was that you?".
+  arrived   confirmed: the driver said "I've parked" and the camera agrees (it wins if it does not), or,
+            on a slow-sensor stall nobody can check soon, the driver's own report (reports.py).
   released  after the arrival window, as soon as the spot is seen empty:
-              never arrived  -> "no_show"  (the driver gets "Unresponsive, so spot released")
-              arrived, left  -> "left"     (quiet)
+              no car ever seen          -> "no_show"   (the driver gets "Unresponsive, so spot released")
+              said parked, never seen   -> "not_seen"  ("We never saw your car at A-05")
+              a car came and went       -> "left"      (quiet)
             or the sensor went quiet past twice the window -> "no_data"
             or the driver let go / claimed another spot     -> "cancelled" / "switched"
+            or the car seen was someone else's (the page)   -> "taken"     (the page finds the next spot)
 
 All times are on the replay clock, like everything else the server serves.
 """
@@ -29,6 +34,7 @@ from parkfind.clock import parse_utc
 ARRIVAL_BASE = timedelta(minutes=8)  # the user's figure; may be corrected later
 # Only stall sensors can confirm a car, so only their spots can be claimed (counted lots cannot).
 CLAIMABLE = ("continuous", "near_live", "periodic_snapshot", "slow_snapshot")
+LIVE = ("continuous", "near_live")   # cameras quick enough to check an "I've parked" within the window
 
 
 def sensor_interval(ttl_s: float) -> timedelta:
@@ -59,10 +65,13 @@ class Claim:
     driver_id: str
     claimed_at: datetime
     window: timedelta
-    arrived: bool = False
+    car_seen: bool = False       # a sensor saw a car here after the claim (anyone's car)
+    confirmed: bool = False      # it is this driver's: their "I've parked" agreed with the camera, or their report
+    said_parked: bool = False    # the driver pressed "I've parked"
 
     def view(self) -> dict:
-        return {"stall_id": self.stall_id, "phase": "arrived" if self.arrived else "held",
+        phase = "arrived" if self.confirmed else ("car_seen" if self.car_seen else "held")
+        return {"stall_id": self.stall_id, "phase": phase, "said_parked": self.said_parked,
                 "claimed_at": _stamp(self.claimed_at), "deadline": _stamp(self.claimed_at + self.window),
                 "window_s": int(self.window.total_seconds())}
 
@@ -118,6 +127,42 @@ class ClaimBook:
             if stall_id is not None:
                 self._release(stall_id, "cancelled", now)
 
+    def parked(self, driver_id: str, status: dict, now: datetime, reports) -> dict:
+        """why: the driver says "I've parked"; we believe the camera, and the driver only where no camera can check.
+        boundary: reads the status (before claims are laid on); changes this driver's claim; may add one report.
+        ugly: a 5-minute camera may not have taken its next picture yet, so "not seen yet" is not a refusal: the
+              claim remembers the tap and confirms itself the moment the camera sees the car.
+        """
+        with self._lock:
+            self._sweep(status, now)
+            stall_id = self._by_driver.get(driver_id)
+            if stall_id is None:
+                raise ClaimRefused("no_claim", "You have no spot claimed.")
+            claim = self._by_stall[stall_id]
+            claim.said_parked = True
+            short = stall_id.split(":", 1)[1]
+            if status["stalls"][stall_id]["cadence_class"] in LIVE:
+                if claim.car_seen:
+                    claim.confirmed = True
+                    return {"result": "confirmed", "message": f"Confirmed: the camera sees your car at {short}.",
+                            "my_claim": claim.view()}
+                return {"result": "not_seen", "message": f"The camera doesn't see a car at {short} yet. "
+                        "We'll confirm as soon as it does.", "my_claim": claim.view()}
+            reports.parked(driver_id, stall_id, now)
+            claim.car_seen = claim.confirmed = True
+            return {"result": "recorded", "message": f"Thanks: {short} is marked taken. This lot's sensor is slow, "
+                    "so your word counts until it checks.", "my_claim": claim.view()}
+
+    def taken(self, driver_id: str, now: datetime) -> None:
+        """why: the car the camera saw was not this driver's (they are still far away): free them to get another spot.
+        boundary: releases only this driver's claim, with outcome "taken"; the page claims the next spot itself.
+        ugly: sent twice (two tabs) it is harmless: the second finds no claim.
+        """
+        with self._lock:
+            stall_id = self._by_driver.get(driver_id)
+            if stall_id is not None:
+                self._release(stall_id, "taken", now)
+
     def overlay(self, status: dict, now: datetime, driver_id: str) -> dict:
         """why: put claims on top of what the sensors say, so pins, guidance and the page treat a held spot as taken.
         boundary: edits the status it is given (stall state and lot counts) and returns this driver's own claim news.
@@ -151,11 +196,13 @@ class ClaimBook:
             stall = status["stalls"].get(stall_id, {})
             seen = stall.get("observed_at")
             if seen and stall.get("last_claim") == "occupied" and parse_utc(seen) > claim.claimed_at:
-                claim.arrived = True
+                claim.car_seen = True
+                if claim.said_parked:
+                    claim.confirmed = True   # they said they parked, and now the camera sees a car: theirs
             if now < claim.claimed_at + claim.window:
                 continue
             if stall.get("state") == "free":
-                self._release(stall_id, "left" if claim.arrived else "no_show", now)
+                self._release(stall_id, "left" if claim.car_seen else ("not_seen" if claim.said_parked else "no_show"), now)
             elif stall.get("state") == "unknown" and now >= claim.claimed_at + 2 * claim.window:
                 self._release(stall_id, "no_data", now)
 

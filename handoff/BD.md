@@ -267,3 +267,103 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
            no claim there; page walk, routes, location card on the merged feed.
   → DI: feed has three new sources (camera.ufpr05/.pucpr/.ufpr04); truth.json "camera_lots" must be skipped in tests.
   → DK: nothing to change; photo lots look like any other lot, with their source in the answer.
+  landed (DK file, by BD): location card names the closer, not-guaranteed lot in amber (#b45309), matching "Filling up".
+
+2026-10-13 · BD-11: score every lot, photo lots included
+  landed: run.py splice_camera_truth: photo lots' truth comes from PKLot's labels (held up to 10 min between
+          photos, absent after the last one); truth.json gains truth_sources. Labels never reach the feed.
+  landed (DI lane, by BD, agreed with BD): tests/score_day.py: replays the day through the server's own reader,
+          lastseen.status and guidance.answer, and checks each against truth.json. Exit 1 if named spots >5% taken.
+  found: Sage FAILS end-to-end: 16.7% of named spots really taken, though only 2.8% of its "free" reads are wrong.
+         Two stalls (D-06, D-07) read free while taken; when the rest of the lot fills, guidance names exactly them.
+         A camera-wide gate cannot see this. Next: decide a per-stall gate (BD, vision.py).
+  → DI: score_day.py is yours now; rewrite freely. Your tests can stop skipping camera_lots: their truth is real.
+  → DK: nothing.
+
+2026-10-13 · BD-12: per-stall gate (vision.py)
+  landed: vision.py trains a trust flag per stall from the tuning days' cross-day test (MIN_FREE_CALLS 20, 5% limit);
+          untrusted stalls report periodic_snapshot. The camera gate now checks the spot guidance would name per
+          photo, not single readings: errors bunch where the lot fills, which is where it names.
+  result: Sage names 23/32 (row D out), named spot taken 1.1% (was 16.7%). Flagler 19/20, 0.0%.
+          Michigan Ave: 19/24 trusted, but named spot taken 7.4% -> stays rows and counts. score_day.py PASS.
+  run.py: startup summary shows "named spot taken" and "names N of M stalls".
+  → DI: a lot can now mix near_live and periodic_snapshot stalls; lastseen and the claim rules already handle it.
+  → DK: nothing; guaranteedSpots() already counts only live stalls.
+
+2026-10-13 · BD-12b: Michigan Ave, more cloudy tuning days (tried, reverted)
+  tried: rule fixed in advance: add every earlier busy, mostly-cloudy weekday (weather tags only): 2013-01-15, 01-16.
+  result: worse: named spot taken 29.6% (was 7.4%), 92.8% right. One median "empty look" per stall blurs across
+          light, and the new tuning days re-picked which PKLot spaces become Stetson stalls.
+  kept: original tuning days; Michigan Ave stays rows and counts (gate held both times). score_day.py PASS.
+  lesson: more data does not fix this model; the next step is the model (empty looks per light), tested on a
+          validation day before the replayed day is touched again.
+
+2026-10-13 · BD-13: validation and exam days; per-light model; UFPR04 outline fix
+  landed: camera files carry tuning / validation / replay / exam photos (with weather) and the chosen model.
+          vision.py --validate (choose models here only) and --exam (once per final model, writes <lot>.exam.json);
+          one grade() for all three graded days. Models: median (one empty look) or per_light (one per weather).
+  found: UFPR04's stall outlines moved up to 146 px between December and January; we had been cutting December
+         photos (tuning 12-14) with January outlines. pklot_cameras.py now refuses any day whose outlines moved
+         more than 3 px. So BD-12b's "per-light blur" reading was partly wrong: the camera had moved.
+  chosen on validation (named spot taken): sage per_light 1.8% vs median 1.8%, tie broken by 'free' wrong 1.9% vs 6.3%;
+         libn per_light 2.3% vs 3.0%; west1 per_light 0.0% vs 0.7% (Michigan Ave validation 98.2% right, was 66.8%).
+  replayed day: Sage 24/32 named, 1.1%; Flagler 19/20, 0.0%; Michigan Ave 17.2% -> rows and counts only.
+  exam (once): Sage 5.3% (2 of 38: just over the line, small sample); Flagler 0.0%; Michigan Ave 7.9%.
+  score_day.py: PASS; new "worst hr" column.
+  → DI: score_day.py has a worst-hour column; nothing else changed for you.
+
+2026-10-13 · BD-14: Google street map under the close-up (DK file, by BD, user's call)
+  landed (WebPage): mapsKey() reads GOOGLE_MAPS_KEY or maps.key (gitignored), refuses odd values, injects __MAPS_KEY__.
+          One Static Maps picture, fixed on campus (29.0358,-81.2996, zoom 16, 640x640 @2x), same URL for everyone:
+          the driver's position never reaches Google. Placed with an affine from three corners (our drawing's axes
+          are ~1.7 deg off square; a plain rectangle put crossings up to 19 m off; the affine: within 2 cm of geoToPic).
+          Close-up draws in real (unstretched) units on that picture: tripTo() route, dot, accuracy ring,
+          "Map data © Google". One download per visit. No key / refused key -> our drawn close-up, as before.
+  checked: stand-in picture with the five surveyed crossings: the dot lands in its ring; 403 falls back cleanly.
+  → DK: your live map with real tiles can reuse GMAP / GMAP_MATRIX; keep the fixed-picture rule or change CONTRACT.
+
+2026-10-13 · BD-15: close-up on OpenStreetMap, nearest landmark, turnable (DK file, by BD); Google reverted
+  reverted: BD-14's Google close-up, mapsKey() and maps.key (user's call: a free map instead).
+  landed (WebPage): one fixed set of 30 OSM tiles (zoom 17) covering campus, the same for everyone, placed with the
+          same three-corner affine (surveyed crossings land where geoToPic puts them); our roads and buildings drawn
+          underneath, so blocked tiles still leave a map. "© OpenStreetMap contributors" in the corner.
+          Nearest landmark (LANDMARKS) outlined in amber, named on the map or on an edge arrow, and in a line under
+          the title with distance and ground compass direction ("Hollis Center, 160 m west").
+          Turnable: ↺ ↻ by 30°, a needle that shows north (tap: north-up); on phones ◎ turns with the compass
+          (iPhone asks permission; sideways screens handled; at most 5 redraws a second). Labels stay upright.
+          ROAD_LINES now keep each road's width (for the close-up).
+  checked: stand-in tiles with the surveyed crossings: a dot 40 m E / 30 m S of one lands 39 m / 30 m from its ring;
+           90° turn puts west at the top and the needle right; tiles blocked -> our drawing; ◎ only on touch screens;
+           collapse hides map and landmark line; no page errors.
+  note: OSM's tile policy asks for light use and credit; 30 tiles per visit, browser-cached, is fine for a demo,
+        not for a public launch (then: a tile provider plan or our own tiles).
+  → DK: for your live map, the same tiles + OSM_MATRIX fit our coordinates; keep the fixed-tiles rule (CONTRACT).
+
+2026-10-13 · BD-16: close-up as a navigation view (DK file, by BD)
+  landed (WebPage): street-level OSM tiles (zoom 18, one fixed set of 88 for campus, loaded the first time the
+          close-up shows); 320 x 230 view; +/- zoom (about 160 / 290 / 510 m across, remembered); you sit at 62% height
+          so more road ahead shows; next-turn banner from the same Dijkstra trip ("400 m · Turn left onto N Amelia
+          Ave", matches roadSteps); P pin for the lot or an edge arrow with its distance; scale bar; heading beam in
+          compass mode; edge labels step aside so they never overlap; credit kept.
+  checked: stand-in z18 tiles: crossing ring where it should be; banners match the written steps (Sage, LBC,
+           Facilities from the gate); 90° turn, zoom limits, tiles blocked -> our drawing, phone view; no errors.
+  open: claims never "arrive" in the demo (the feed is a recording; nobody drives your car). Design agreed in
+        principle with the user (camera decides; "I've parked" optional and checked against the camera; driver
+        reports on low-visibility lots; demo car). Waiting on three answers before building.
+
+2026-10-13 · BD-17: arrival you can trust (server half); driver reports
+  found: claims never "arrived" in the demo because the claimed stall usually stayed free in the recording, and a
+         recorded car that did park there was credited to the claimer without asking whose car it was.
+  landed: claims.py phases held -> car_seen -> arrived. car_seen = a sensor saw a car after the claim (anyone's).
+          arrived = "I've parked" agreed with the camera (camera wins; a tap before the camera's next picture is
+          remembered and confirms itself), or on a slow stall the driver's report. New outcomes: not_seen (said parked,
+          never seen), taken (the page says the car was someone else's). POST /parked, POST /taken.
+          reports.py (new, BD): driver reports as SK-EVENTs (source driver.report, cadence event_only): row counts
+          (10 min; refused on rows a live camera watches) and "I've parked" on slow stalls (until the next reading).
+          POST /report. server.py (DI file, by BD): current_status reads reports alongside the feed; new endpoints.
+          WebPage bridge only: car_seen shown as "car detected", not_seen release message. Full page: BD-18.
+  checked: point A (recorded car arrives in the window -> car_seen -> "I've parked" -> confirmed); taken; not_seen;
+           slow stall recorded and reads occupied from driver.report; row report used by guidance (zone grain,
+           ADA taken off for a regular car), refused on a camera row, gone after 10 min; old claim tests 12/12.
+  → DI: server.py has /parked, /taken, /report and current_status(…, reports). Please review; tests welcome.
+  → DK: SK-CLAIM phases and SK-REPORT in CONTRACT; BD-18 adds the buttons to the page.

@@ -11,9 +11,18 @@ photos while the simulator covers the rest:
   UFPR04 (28 spaces)  -> west1 · Michigan Ave · Lot 42  (24 stalls)
   PUCPR  (100 spaces) -> libn  · Flagler · Lot 25       (20 stalls)
 
-Each camera file lists two sets of photos: the TUNING days (vision.py learns each stall's empty
-look and its car/no-car line from these, with their labels) and the REPLAYED day (what drivers
-see; its labels are kept only to grade vision.py, never to decide a stall's state).
+Each camera file lists four sets of photos, kept apart so every grade we quote stays honest:
+  TUNING      vision.py learns each stall's empty look and its car/no-car line from these
+  VALIDATION  model choices are made here (which model, which settings), never on the days below
+  REPLAY      what drivers see; its labels grade the final model and run the camera gate
+  EXAM        graded once per final model (vision.py --exam), a day nobody has tuned against
+Labels on the last three are used only to grade, never to decide a stall's state.
+
+Validation and exam days follow one rule, fixed 2026-10-13 before anything was scored: the busy
+weekdays (>=100 photos, >=90% full at peak) nearest the replayed day that are not tuning days.
+Every day must show the stalls where the replayed day shows them: UFPR04's outlines moved up to
+146 px between December and January (camera moved or relabelled), so its December days are out
+and its January days are thinner (rule relaxed there to >=80 photos, >=50% full).
 
 Standard library only: this reads JSON and writes JSON. The image work is vision.py's.
 
@@ -32,10 +41,13 @@ CAMERAS = HERE / "cameras"
 # camera -> where it goes, which day drivers see, which days it learns from (busy weekday + lighter day,
 # in the kinds of light the replayed day has); chosen without looking at the replayed day's labels
 PLAN = {
-    "ufpr05": {"lot_id": "sage", "replay": "2013-02-22", "tuning": ["2013-03-11", "2013-03-02"]},
-    # tuning covers sunny and cloudy light: tuned on sunny days only, this camera misread a cloudy day
-    "ufpr04": {"lot_id": "west1", "replay": "2013-01-22", "tuning": ["2013-01-21", "2013-01-17", "2012-12-14"]},
-    "pucpr": {"lot_id": "libn", "replay": "2012-11-08", "tuning": ["2012-10-29", "2012-10-16"]},
+    "ufpr05": {"lot_id": "sage", "replay": "2013-02-22", "tuning": ["2013-03-11", "2013-03-02"],
+               "validation": "2013-03-05", "exam": "2013-03-06", "model": "per_light"},
+    # January only: December photos have other outlines (see above). 01-21 sunny/rainy, 01-17 sunny/rainy.
+    "ufpr04": {"lot_id": "west1", "replay": "2013-01-22", "tuning": ["2013-01-21", "2013-01-17"],
+               "validation": "2013-01-16", "exam": "2013-01-29", "model": "per_light"},
+    "pucpr": {"lot_id": "libn", "replay": "2012-11-08", "tuning": ["2012-10-29", "2012-10-16"],
+              "validation": "2012-11-09", "exam": "2012-10-31", "model": "per_light"},
 }
 REPLAY_DATE = "2026-09-21"   # the simulator's day; photos keep their clock time on this date
 IMAGE_SIZE = [1280, 720]
@@ -77,7 +89,7 @@ def photo_entry(x: dict, spaces: list[int]) -> dict:
     labels = {str(p["space_id"]): 1 if p["occupancy_status"] == "occupied" else 0
               for p in x["parking_spaces"]["polylines"] if p["space_id"] in spaces}
     return {"file": str(Path("data/data/pklot") / x["filepath"]).replace("\\", "/"),
-            "local_time": x["parking_timestamp"]["$date"][11:19], "labels": labels}
+            "local_time": x["parking_timestamp"]["$date"][11:19], "weather": x["weather"]["label"], "labels": labels}
 
 
 def main() -> None:
@@ -102,6 +114,15 @@ def main() -> None:
         if len(spaces) < len(stalls):
             raise SystemExit(f"{source} has {len(spaces)} spaces, {plan['lot_id']} needs {len(stalls)}")
         geometry = {p["space_id"]: p["points"][0] for p in replay[0]["parking_spaces"]["polylines"]}
+        validation, exam = day(plan["validation"]), day(plan["exam"])
+        for x in tuning + validation + exam:
+            # one set of outlines cuts every photo; a photo whose own outlines differ would be read in the wrong place
+            here = {p["space_id"]: p["points"][0] for p in x["parking_spaces"]["polylines"]}
+            moved = max(abs(a - b) * size for sid in spaces for pa, pb in zip(here.get(sid, []), geometry[sid])
+                        for a, b, size in zip(pa, pb, IMAGE_SIZE))
+            if moved > 3:
+                raise SystemExit(f"{source} {x['parking_timestamp']['$date'][:10]}: stall outlines moved {moved:.0f} px "
+                                 f"from the replayed day; pick days from the same camera setup")
         camera = {
             "camera_id": f"camera.{source}",
             "lot_id": plan["lot_id"],
@@ -117,11 +138,15 @@ def main() -> None:
                        for stall, sid in zip(stalls, spaces)],
             "tuning": [photo_entry(x, spaces) for x in tuning],
             "replay": [photo_entry(x, spaces) for x in replay],
+            "model": plan["model"],   # chosen on the validation day only (BD.md, BD-13)
+            "validation": [photo_entry(x, spaces) for x in validation],
+            "exam": [photo_entry(x, spaces) for x in exam],
         }
         out = CAMERAS / f"{plan['lot_id']}.json"
         out.write_text(json.dumps(camera, indent=1), encoding="utf-8")
         print(f"{out.relative_to(HERE)}  {source} -> {plan['lot_id']}: {len(stalls)} stalls, "
-              f"{len(camera['tuning'])} tuning photos, {len(camera['replay'])} replayed photos")
+              f"{len(camera['tuning'])} tuning, {len(camera['validation'])} validation, "
+              f"{len(camera['replay'])} replayed, {len(camera['exam'])} exam photos")
 
 
 if __name__ == "__main__":

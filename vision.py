@@ -9,7 +9,7 @@ tell, and do not need to.
 
   camera file (cameras/<lot>.json)   which lot, the photos, one polygon per Stetson stall
                                       (made from PKLot by pklot_cameras.py)
-  -> out/cameras/<lot>.npz           what it learned: each stall's empty look + the car/no-car line
+  -> out/cameras/<lot>.<model>.npz   what it learned: each stall's empty look + the car/no-car line
   -> out/vision/<lot>.jsonl          one event per stall per photo, stamped with the photo's time
 
 How a stall is read: we keep a picture of each stall when it is empty (built from the tuning
@@ -20,6 +20,11 @@ unsure: telling a driver a taken spot is free is the expensive mistake.
 
 Tuning uses other days than the one drivers see, and every run is graded against the people's
 labels for the replayed day; the grade is printed, not hidden.
+
+Two gates decide which stalls may be named to a driver (CONTRACT D4). Stall by stall, on the
+tuning days: a stall the camera misreads (the far edge, glare) reports rows only, because once
+the rest of the lot fills, guidance would name exactly that stall. Camera-wide, on the replayed
+day: if the trusted stalls still fail, the whole camera reports rows only.
 
 Pillow and NumPy are allowed here and only here. Nothing in parkfind/ imports them.
 
@@ -39,9 +44,11 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from parkfind.event import CADENCES, OccupancyEvent
+from parkfind.guidance import stall_types, walk_order
 
 HERE = Path(__file__).resolve().parent
 WRONG_FREE_LIMIT = 0.05   # at most 1 in 20 "free" calls may be wrong, measured across the tuning days
+MIN_FREE_CALLS = 20       # a stall said "free" fewer times than this on the tuning days has no record to trust
 
 
 def load_camera(path: Path) -> dict:
@@ -121,29 +128,41 @@ def crops(path: Path, cam: dict, shapes) -> list[tuple[np.ndarray, float]] | Non
 
 def features(patches, refs, shapes) -> np.ndarray:
     """why: the two numbers the model reads per stall: how unlike its empty self it looks, and its edge detail.
-    boundary: arithmetic on patches; refs are the stalls' empty looks from training.
+    boundary: arithmetic on patches; refs[k] is a list of stall k's empty looks (one, or one per kind of light).
+    ugly: with several empty looks, the nearest one counts: an empty stall under clouds should be compared with
+          the stall empty under clouds, not with the sunny one.
     """
-    return np.array([[float(np.abs(z - r)[s[5]].mean()), e] for (z, e), r, s in zip(patches, refs, shapes)])
+    return np.array([[min(float(np.abs(z - r)[s[5]].mean()) for r in rs), e]
+                     for (z, e), rs, s in zip(patches, refs, shapes)])
 
 
-def train(cam: dict, shapes, model_path: Path) -> None:
-    """why: learn each stall's empty look and the car/no-car line from the tuning photos and their labels.
-    boundary: reads tuning photos only; writes model_path. The replayed day is never used here.
+MODELS = ("median", "per_light")   # one empty look per stall, or one per kind of light (sunny / cloudy / rainy)
+
+
+def train(cam: dict, shapes, model_path: Path, model: str) -> None:
+    """why: learn each stall's empty look(s) and the car/no-car line from the tuning photos and their labels.
+    boundary: reads tuning photos only; writes model_path. Validation, replayed and exam days are never used here.
     ugly: a stall never labelled empty on the tuning days has no empty look; training stops and says which.
+          per_light keeps a look only for light seen empty at least 3 times, else falls back to the one median.
     """
     sids = [str(s["space_id"]) for s in cam["spaces"]]
-    seen, days = [], []
+    seen, days, light = [], [], []
     for photo in cam["tuning"]:
         p = crops(HERE / photo["file"], cam, shapes)
         if p is not None:
             seen.append((p, [photo["labels"][sid] for sid in sids]))
             days.append(photo.get("day", Path(photo["file"]).name[:10]))
-    refs = []
+            light.append(photo.get("weather", "unknown"))
+    refs = np.empty(len(shapes), dtype=object)
     for k, (stall, *_rest) in enumerate(shapes):
-        empty = [p[k][0] for p, labels in seen if labels[k] == 0]
+        empty = [(p[k][0], w) for (p, labels), w in zip(seen, light) if labels[k] == 0]
         if len(empty) < 3:
             raise SystemExit(f"{cam['lot_id']}:{stall} was never seen empty on the tuning days; pick other days")
-        refs.append(np.median(np.stack(empty), axis=0))
+        looks = [np.median(np.stack([z for z, _ in empty]), axis=0)]
+        if model == "per_light":
+            by_light = [[z for z, w in empty if w == kind] for kind in sorted({w for _, w in empty})]
+            looks = [np.median(np.stack(zs), axis=0) for zs in by_light if len(zs) >= 3] or looks
+        refs[k] = looks
     X = np.concatenate([features(p, refs, shapes) for p, _ in seen])
     y = np.concatenate([np.array(labels) for _, labels in seen]).astype(float)
     day = np.concatenate([np.full(len(sids), d) for (_, _), d in zip(seen, days)])
@@ -159,11 +178,20 @@ def train(cam: dict, shapes, model_path: Path) -> None:
         free = probs <= t
         if free.sum() and (y[free] == 1).mean() <= WRONG_FREE_LIMIT:
             caution = float(t)   # the highest line that still meets the limit: as many honest "free" as possible
+    # The same test, stall by stall. A camera-wide average hides a stall the camera always misreads (glare,
+    # a tree, the far edge of the picture), and guidance names exactly that stall once the rest fill up.
+    stall_of = np.tile(np.arange(len(sids)), len(seen))
+    trusted = []
+    for k in range(len(sids)):
+        said_free = (stall_of == k) & (probs <= caution)
+        n = int(said_free.sum())
+        trusted.append(n >= MIN_FREE_CALLS and (y[said_free] == 1).mean() <= WRONG_FREE_LIMIT)
     w, mu, sd = fit_line(X, y, raw=True)
     model_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(model_path, w=w, mu=mu, sd=sd, caution=caution, refs=np.array(refs, dtype=object))
+    np.savez_compressed(model_path, w=w, mu=mu, sd=sd, caution=caution, refs=refs,
+                        trusted=np.array(trusted), model=model)
     print(f"  learned from {len(seen)} tuning photos ({int(y.sum())} occupied / {int(len(y) - y.sum())} free stall views); "
-          f"says occupied above {caution:.2f}")
+          f"says occupied above {caution:.2f}; {sum(trusted)} of {len(sids)} stalls trusted to be named")
 
 
 def fit_line(X: np.ndarray, y: np.ndarray, raw: bool = False):
@@ -191,80 +219,131 @@ def classify(prob: float, caution: float) -> tuple[str, float]:
     return state, round(min(0.99, max(0.5, confidence)), 2)
 
 
+def grade(cam: dict, shapes, readings, trusted) -> dict:
+    """why: one way to grade any labelled day (validation, replayed, exam), so their numbers compare.
+    boundary: reads the people's labels; decides nothing. "named" is the stall guidance would name per photo:
+              the nearest trusted free regular stall (guidance.walk_order), which is what a driver is told.
+    ugly: errors bunch where the lot fills, which is exactly where guidance names; so "named" is the number that
+          gates, not the average over every reading.
+    """
+    lot = cam["lot_id"]
+    sids = [str(s["space_id"]) for s in cam["spaces"]]
+    campus = json.loads((HERE / "campus.json").read_text(encoding="utf-8"))
+    types = stall_types(next(l for l in campus["lots"] if l["lot_id"] == lot))
+    right = total = said_free = wrong_free = said_occ = wrong_occ = trusted_free = trusted_wrong = 0
+    named = named_wrong = 0
+    for photo, calls in readings:
+        free_here = []
+        for (stall, *_rest), (state, _), sid, ok in zip(shapes, calls, sids, trusted):
+            truth = photo["labels"][sid]
+            total += 1
+            right += (state == "occupied") == (truth == 1)
+            if state == "free":
+                said_free += 1
+                wrong_free += truth == 1
+                trusted_free += ok
+                trusted_wrong += ok and truth == 1
+                if ok and types[f"{lot}:{stall}"] == "regular":
+                    free_here.append((f"{lot}:{stall}", sid))
+            else:
+                said_occ += 1
+                wrong_occ += truth == 0
+        if free_here:
+            _, sid = min(free_here, key=lambda f: walk_order(f[0]))
+            named += 1
+            named_wrong += photo["labels"][sid] == 1
+    return {"photos": len(readings), "right": round(right / max(1, total), 4),
+            "free_wrong": round(wrong_free / max(1, said_free), 4),
+            "occupied_wrong": round(wrong_occ / max(1, said_occ), 4),
+            "trusted_free_wrong": round(trusted_wrong / max(1, trusted_free), 4),
+            "named": named, "named_wrong": named_wrong, "named_free_wrong": round(named_wrong / max(1, named), 4)}
+
+
+def say(day: str, g: dict) -> str:
+    return (f"  {day}: {100 * g['right']:.1f}% right; 'free' wrong {100 * g['free_wrong']:.1f}%; "
+            f"named spot really taken {g['named_wrong']} of {g['named']} photos ({100 * g['named_free_wrong']:.1f}%)")
+
+
 def main() -> None:
-    """why: one camera: learn if needed, read every replayed photo, write its events, grade it.
-    boundary: reads the camera file and photos; writes out/cameras/<lot>.npz and out/vision/<lot>.jsonl.
-    ugly: the people's labels for the replayed day are used ONLY for the grade (and the gate), never for a state.
+    """why: one camera: learn if needed, read the photos of one day, then grade, gate and write its events.
+    boundary: reads the camera file and photos; writes out/cameras/<lot>.<model>.npz and out/vision/<lot>.*
+              (--validate writes nothing; --exam writes only <lot>.exam.json).
+    ugly: labels on the validation, replayed and exam days are used ONLY to grade (and gate), never for a state.
+          Choose models with --validate; run --exam once per final model, or the exam stops being one.
     """
     ap = argparse.ArgumentParser(description="ParkFind vision adapter")
     ap.add_argument("--camera", required=True, help="camera file, e.g. cameras/sage.json")
     ap.add_argument("--out", default="out/vision", help="folder for <lot>.jsonl")
     ap.add_argument("--retrain", action="store_true", help="learn again from the tuning photos")
+    ap.add_argument("--model", choices=MODELS, help="override the camera file's model (for --validate)")
+    ap.add_argument("--validate", action="store_true", help="grade the validation day only; writes nothing")
+    ap.add_argument("--exam", action="store_true", help="grade the exam day once; writes <lot>.exam.json")
     args = ap.parse_args()
 
     cam_path = Path(args.camera)
-    cam = load_camera(cam_path if cam_path.is_absolute() else HERE / cam_path)
+    cam_path = cam_path if cam_path.is_absolute() else HERE / cam_path
+    cam = load_camera(cam_path)
+    model = args.model or cam.get("model", "median")
     shapes = stall_shapes(cam)
-    model_path = HERE / "out" / "cameras" / f"{cam['lot_id']}.npz"
-    print(f"{cam['camera_id']} -> {cam['lot_id']} ({len(shapes)} stalls)")
-    if args.retrain or not model_path.exists() or model_path.stat().st_mtime < (HERE / cam_path).stat().st_mtime:
-        train(cam, shapes, model_path)
+    lot = cam["lot_id"]
+    model_path = HERE / "out" / "cameras" / f"{lot}.{model}.npz"
+    print(f"{cam['camera_id']} -> {lot} ({len(shapes)} stalls, model {model})")
+    if args.retrain or not model_path.exists() or model_path.stat().st_mtime < cam_path.stat().st_mtime:
+        train(cam, shapes, model_path, model)
     m = np.load(model_path, allow_pickle=True)
     w, mu, sd, refs, caution = m["w"], m["mu"], m["sd"], list(m["refs"]), float(m["caution"])
+    trusted = [bool(t) for t in m["trusted"]]
+
+    def read(photos: list[dict]) -> list[tuple[dict, list[tuple[str, float]]]]:
+        readings = []
+        for photo in photos:
+            patches = crops(HERE / photo["file"], cam, shapes)
+            if patches is not None:
+                X = (features(patches, refs, shapes) - mu) / sd
+                probs = 1 / (1 + np.exp(-(np.c_[X, np.ones(len(X))] @ w)))
+                readings.append((photo, [classify(float(p), caution) for p in probs]))
+        return readings
 
     out_dir = Path(args.out) if Path(args.out).is_absolute() else HERE / args.out
+    if args.validate or args.exam:
+        day = "validation" if args.validate else "exam"
+        g = grade(cam, shapes, read(cam.get(day, [])), trusted)
+        print(say(f"{day} day", g) + f"  [{sum(trusted)} of {len(trusted)} stalls trusted]")
+        if args.exam:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / f"{lot}.exam.json").write_text(json.dumps({"camera_id": cam["camera_id"], "lot_id": lot,
+                                                                  "model": model, **g}, indent=1), encoding="utf-8")
+        return
+
+    # the replayed day: read, grade, gate, write the events drivers see
+    readings = read(cam["replay"])
+    g = grade(cam, shapes, readings, trusted)
+    # Two gates (D4). Per stall, from the tuning days (trusted, in training): only a stall whose "free" held up
+    # there may be named. Per camera, on this unseen day: the spot guidance would name must be really free 19
+    # times in 20. A stall that fails either still reports, as periodic_snapshot: counted in its row, never named.
+    cadence = cam["cadence_class"] if g["named"] and g["named_free_wrong"] <= WRONG_FREE_LIMIT else "periodic_snapshot"
     out_dir.mkdir(parents=True, exist_ok=True)
-    feed_path = out_dir / f"{cam['lot_id']}.jsonl"
-    sids = [str(s["space_id"]) for s in cam["spaces"]]
-    lot = cam["lot_id"]
-
-    # 1. read every replayed photo
-    readings, skipped = [], 0
-    for photo in cam["replay"]:
-        patches = crops(HERE / photo["file"], cam, shapes)
-        if patches is None:
-            skipped += 1
-            continue
-        X = (features(patches, refs, shapes) - mu) / sd
-        probs = 1 / (1 + np.exp(-(np.c_[X, np.ones(len(X))] @ w)))
-        readings.append((photo, [classify(float(p), caution) for p in probs]))
-
-    # 2. grade against the people's labels (used for the grade only, never for a stall's state)
-    right = wrong_free = wrong_occ = said_free = said_occ = 0
-    for photo, calls in readings:
-        for (state, _), sid in zip(calls, sids):
-            truth = photo["labels"][sid]
-            if state == "free":
-                said_free += 1
-                wrong_free += truth == 1
-            else:
-                said_occ += 1
-                wrong_occ += truth == 0
-            right += (state == "occupied") == (truth == 1)
-    total = said_free + said_occ
-    free_wrong = wrong_free / max(1, said_free)
-
-    # 3. the gate: a camera may promise single spots (near_live) only if its "free" is right 19 times in 20
-    #    on a day it never learned from; otherwise it reports like a slow sensor (rows and counts, D4)
-    cadence = cam["cadence_class"] if free_wrong <= WRONG_FREE_LIMIT else "periodic_snapshot"
+    feed_path = out_dir / f"{lot}.jsonl"
     with feed_path.open("w", encoding="utf-8", newline="\n") as feed:
         for photo, calls in readings:
             when = observed_at(cam, photo)
-            for (stall, *_rest), (state, confidence) in zip(shapes, calls):
+            for (stall, *_rest), (state, confidence), ok in zip(shapes, calls, trusted):
                 ev = OccupancyEvent(stall_id=f"{lot}:{stall}", zone_id=f"{lot}:{stall.split('-')[0]}", lot_id=lot,
                                     state=state, confidence=confidence, source=cam["camera_id"],
-                                    observed_at=when, ttl=cam["ttl"], cadence_class=cadence)
+                                    observed_at=when, ttl=cam["ttl"],
+                                    cadence_class=cadence if ok else "periodic_snapshot")
                 feed.write(json.dumps(ev.to_json()) + "\n")
-    print(f"  {len(readings)} photos -> {feed_path.relative_to(HERE)} ({total} stall readings)")
-    print(f"  grade vs people's labels: {100 * right / total:.1f}% right; "
-          f"'free' wrong {100 * free_wrong:.1f}% of the time; 'occupied' wrong {100 * wrong_occ / max(1, said_occ):.1f}%")
-    print("  gate: " + ("passed, names single spots (near_live)" if cadence == cam["cadence_class"] else
-                       f"failed ('free' must be wrong at most {100 * WRONG_FREE_LIMIT:.0f}% of the time), "
-                       "reports rows and counts only (periodic_snapshot)"))
+    untrusted = [stall for (stall, *_rest), ok in zip(shapes, trusted) if not ok]
+    print(f"  {len(readings)} photos -> {feed_path.relative_to(HERE)}")
+    print(say("replayed day", g))
+    print(f"  stall gate (tuning days): {sum(trusted)} of {len(trusted)} trusted"
+          + (f"; rows only: {', '.join(untrusted)}" if untrusted else ""))
+    print("  camera gate (replayed day): " + ("passed, names those stalls (near_live)" if cadence == cam["cadence_class"]
+          else f"failed (limit {100 * WRONG_FREE_LIMIT:.0f}%), rows and counts only (periodic_snapshot)"))
     (out_dir / f"{lot}.grade.json").write_text(json.dumps({
-        "camera_id": cam["camera_id"], "lot_id": lot, "right": round(right / total, 4),
-        "free_wrong": round(free_wrong, 4), "occupied_wrong": round(wrong_occ / max(1, said_occ), 4),
-        "cadence": cadence, "caution": caution}, indent=1), encoding="utf-8")
+        "camera_id": cam["camera_id"], "lot_id": lot, "model": model, **g, "trusted": sum(trusted),
+        "stalls": len(trusted), "untrusted": untrusted, "cadence": cadence, "caution": caution}, indent=1),
+        encoding="utf-8")
 
 
 if __name__ == "__main__":
