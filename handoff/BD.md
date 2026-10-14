@@ -502,3 +502,18 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   open: V-9 entry in TeamVote.md still says "proposed (not built)"; not edited (TeamVote changes need BD's OK).
   TeamVote (with BD's OK, 2026-10-13): V-6..V-9 kept, V-9 marked built; V-10 added (flagged camera stops naming spots,
   only when 3+ different drivers contradicted it; proposed, not built).
+
+2026-10-13 · BD-26: whole-project check (no code change)
+  checked: every Python file compiles; pyflakes clean except one unused import (parse_utc in parkfind/lastseen.py,
+           DI's file: DI to remove). score_day on today's merged day: PASS (Sage 1.1%, Flagler 0.0% named wrong;
+           Michigan Ave names nothing). Real merged day, every 10 min x 3 car types x every lot: 586 answers, none
+           to a spot not free, none to an untrusted stall, no regular car sent to ADA/EV, no free past its ttl.
+           Page suites: four drivers 11/11, demo 9+5+6, extension 5/5, flow 24/24, features 21/21, hold 6/6,
+           health 6/6, phone 10/10, routing 0 worse, sweep 441 trips no throws; claims 12/12 + 15/15.
+  fixed (README): "if no car reaches it within 8 minutes" predated hold sizing; now says about the drive time.
+  found: out/latest/labels.jsonl holds 3 test taps ("There's a car in it", Flagler A-02/A-03/B-02 at 06:20) that
+         the people's labels say were free. They count against Flagler's health and labels.py collect would train
+         on them. Delete that file before collecting; a fix (ignore taps from one driver id beyond one per camera
+         per hour, or a --test flag that logs nothing) needs BD's OK first.
+  note: utc_offset -04:00 is right for the replayed day (21 Sep). It only matters once live data runs past 1 Nov.
+

@@ -119,7 +119,7 @@ java --source 17 WebPage
 ```
 
 Then open http://localhost:8085. The simulator writes a full day from 06:30 lot time; the server
-replays it ten times faster than real time (so a claim's 8-minute window takes 48 seconds); the
+replays it ten times faster than real time (so an 8-minute hold takes 48 seconds); the
 page asks for fresh status every five seconds.
 To freeze the morning at one moment instead, start the server with
 `--now 2026-09-21T08:15:00-04:00 --speed 0`.
@@ -127,8 +127,8 @@ To freeze the morning at one moment instead, start the server with
 Click a P pin to open that lot: it leads with the best spot for your car and how old that
 sighting is; stalls show free, taken, held or unknown, and lots that only count cars (an hourly
 count, a gate) show their counts row by row with their age. Press **Claim this spot** and nobody
-else is sent there; if no car reaches it within 8 minutes (13 or 23 for slower cameras), it is
-released and you are told. Search takes buildings, lots or spots: `CUB`, `Lot 41`, `Sage B-04`.
+else is sent there; if no car reaches it in time (about your drive time, see below; slower cameras add
+their 5 or 15 minutes), it is released and you are told. Search takes buildings, lots or spots: `CUB`, `Lot 41`, `Sage B-04`.
 
 Your spot lives in a card at the top of the right column, under "Live · updated": held until
 when, what the camera last saw, and the buttons. A spot is held about as long as your drive to it
