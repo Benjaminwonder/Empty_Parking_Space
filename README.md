@@ -131,10 +131,25 @@ else is sent there; if no car reaches it within 8 minutes (13 or 23 for slower c
 released and you are told. Search takes buildings, lots or spots: `CUB`, `Lot 41`, `Sage B-04`.
 
 Your spot lives in a card at the top of the right column, under "Live · updated": held until
-when, what the camera last saw, and the buttons. When the camera sees a car in your spot it asks
-"Was that you?" (Yes, I parked / No, not me: then the lot opens on the next best spot). "I've
+when, what the camera last saw, and the buttons. A spot is held about as long as your drive to it
+takes (4 to 15 minutes; the page sends only the minutes, never where you are). If you are visibly closer by
+road near the end of the hold, it is extended once, by 2 to 5 minutes. Suggestions prefer a lot
+that will still have room when you arrive: a lot with fewer free spots than it typically loses
+during your drive (about one per 10 minutes) is marked "may be gone". `python tests/score_day.py`
+also grades the arrival guess against a trend line, so we notice the day a trend starts to win. When the camera sees a car in your spot, your
+location (used in the page only) decides whose it was: at the lot (about 60 m) you are parked;
+far away (120 m or more) someone else took it, and after 5 seconds with "That was me" on screen
+we hold the best spot left (same lot first) and update the route; in between, or without
+location, it asks "Was that you?" (Yes, I parked / No, not me). "I've
 parked" is checked against the camera, which wins; on slow-sensor lots your word counts until the
-sensor checks. Once you are parked the route leaves the map. In lots no live camera fully
+sensor checks. Once you are parked the route leaves the map. In the demo (run.py), a held spot offers "Drive there (demo)": your dot drives the route at
+campus speed (20 km/h, times the replay speed), and at a camera lot the camera sees your car, so
+the claim, "Was that you?" and parking all run on the product's own logic; at a slow lot you tap
+"I've parked". Recorded cars still play: if one takes your spot on the way, you are moved to the
+next spot and drive on. Two features are built but switched off until a campus needs them
+(add `?features=findMyCar,permits` to the page address to try them): Find my car routes a parked
+driver back to their spot, and Parking as (permit) fades lots your permit can't use and keeps them
+out of suggestions and claims (the server refuses them too); later, gate cameras can set the permit. In lots no live camera fully
 watches, "Here now? Help other drivers" lets you report roughly how many spots a row has free
 (counted for 10 minutes, never a promised spot).
 
@@ -162,6 +177,24 @@ Stall by stall, on the tuning days: a stall the camera misreads (Sage's far row 
 Camera-wide, on the unseen day: the one spot guidance would name must be really free at least 19
 times in 20. Sage names 24 of 32 stalls (named spot taken 1.1%), Flagler 19 of 20 (0.0%); Michigan
 Ave fails (17.2%), so it reports rows and counts. `python tests/score_day.py` checks the whole day.
+
+On a phone: `python run.py --phone` also serves the page over HTTPS at the laptop's Wi-Fi address
+(printed at start, e.g. https://192.168.1.23:8443) with a certificate it makes once with Java's keytool.
+Phones give location and the compass only to HTTPS pages. The phone warns once that the connection
+isn't private (our own demo certificate): accept it. Windows may ask to let Java on private networks:
+allow it. On a phone the trip card sits above the map, the close-up under it, buttons are thumb-sized,
+and the screen stays on while a route runs (where the phone allows).
+
+Each camera has a health check: over its last 50 confirmations, how often drivers contradicted it
+("There's a car in it" where it said free, or "I've parked" it never saw). With 10 or more
+confirmations, 2 or more against, and a rate of 10% (or twice its graded error, if higher), the lot
+shows a warning in the lot list and window, and on the run.py board.
+
+Drivers' confirmations become camera labels: "I've parked" agreed by the camera, "No, not me" and
+"I've left" are logged (real camera readings only, never the demo car) and `python labels.py collect`
+turns them into labelled photos; `python vision.py --camera cameras/west1.json --with-labels
+out/labels/west1.json` learns from them. `python labels.py simulate --p 0.3` makes a synthetic set for
+experiments. One day of confirmations changes nothing measurable (see handoff/BD.md, BD-24).
 
 Each camera's days are kept apart: tuning (learn), validation (choose the model: `vision.py --validate`),
 replayed (what drivers see, and the gate), exam (graded once per final model: `vision.py --exam`).

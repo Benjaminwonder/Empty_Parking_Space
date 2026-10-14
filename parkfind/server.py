@@ -19,6 +19,9 @@ from parkfind.clock import make_clock
 from parkfind import guidance
 from parkfind.claims import ClaimBook, ClaimRefused
 from parkfind.reports import ReportBook, ReportRefused
+from parkfind.demo import DemoBook
+from parkfind.forecast import Forecaster, lot_counts
+from parkfind.confirmations import LabelLog
 from parkfind.lastseen import load_layout, read_feed, status
 
 
@@ -48,7 +51,7 @@ def events_until(feed_path: Path, now):
     return cache["events"][:bisect.bisect_right(cache["times"], now)], cache["rejected"]
 
 
-def current_status(run, layout, now, reports=None):
+def current_status(run, layout, now, reports=None, demo=None):
     """
     why: One place that turns the feed (and drivers' reports) into status at a moment, shared by views and claims.
     boundary: Reads validated sensor events, live driver reports (same event shape) and SK-LAYOUT, never simulator truth.
@@ -58,19 +61,24 @@ def current_status(run, layout, now, reports=None):
     events, rejected_lines = events_until(run / "feed.jsonl", now)
     if reports is not None:
         events = events + reports.events(now)
+    if demo is not None:
+        cars, holder = demo
+        events = events + cars.events(now, holder)   # demo mode only: the watcher's own car
     snapshot = status(events, layout, now)
     snapshot["rejected_lines"] = rejected_lines
     return snapshot
 
 
-def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None, reports=None):
+def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None, reports=None, demo=None,
+               forecaster=None, labels=None):
     """
     why: Build the current SK-VIEW response for a frontend request.
     boundary: Sensor status first, then claims on top, then guidance, so guidance never names a held spot.
     ugly: answer is null until the page names a lot (nearest to the driver, or a clicked pin).
     """
     now = clock()
-    snapshot = current_status(run, layout, now, reports)
+    snapshot = current_status(run, layout, now, reports, demo and (demo[0], book.holder))
+    counts = lot_counts(snapshot)   # before claims are laid on: a held spot is not a lot filling up
     claim_news = book.overlay(snapshot, now, driver_id)
 
     answer = guidance.answer(snapshot, layout, now, vehicle_class, driver_id, lot_id)
@@ -81,16 +89,20 @@ def build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id=None, 
         "answer": answer,
         "my_claim": claim_news["my_claim"],
         "last_release": claim_news["last_release"],
+        "demo": {"speed": demo[1]} if demo else None,   # the page offers "Drive there (demo)" only when set
+        "forecast": forecaster.forecast(now, counts) if forecaster else {},
+        "camera_health": labels.health() if labels else {},   # V-9: drivers contradicting a camera lately
     }
 
 
 PAGE_ORIGIN = "http://localhost:8085"
 
 
-def make_handler(run, layout, clock, book, reports=None):
+def make_handler(run, layout, clock, book, reports=None, demo=None, forecaster=None, labels=None):
     """
     why: Bind the selected feed, layout, clock, claim book and driver reports to each HTTP request.
-    boundary: GET /view (SK-VIEW); POST /claim, /release, /parked, /taken (SK-CLAIM); POST /report (SK-REPORT).
+    boundary: GET /view (SK-VIEW); POST /claim, /release, /parked, /taken (SK-CLAIM); POST /report (SK-REPORT);
+              POST /demo/park only when the server was started with --demo (demo = (DemoBook, speed)).
     ugly: a bad vehicle_class or lot_id is a 400, never a guess at what was meant.
     """
 
@@ -134,34 +146,67 @@ def make_handler(run, layout, clock, book, reports=None):
                 if vehicle_class not in guidance.TIERS:
                     self._send_json(400, {"code": "bad_vehicle", "message": f"Unknown vehicle_class {vehicle_class!r}."})
                     return
+                # permits (switched off unless the page sends one): a lot that is not yours is never claimed
+                permit = params.get("permit", [""])[0]
+                allowed = lot.get("permits", []) if lot else []
+                if permit and allowed and "open_permit" not in allowed and permit not in allowed:
+                    self._send_json(409, {"code": "wrong_permit",
+                                          "message": "Your permit can't park in this lot. Pick a lot for your permit."})
+                    return
                 if kind is not None and kind not in guidance.TIERS[vehicle_class]:
                     self._send_json(409, {"code": "wrong_type",
                                           "message": f"That is an {kind.upper()} spot. Pick the {kind.upper()} tab if it is for you."})
                     return
                 try:
-                    claim = book.claim(stall_id, driver_id, current_status(run, layout, now, reports), now)
+                    # hold_min: the page's estimate of the drive in whole minutes; never a location (CONTRACT)
+                    claim = book.claim(stall_id, driver_id, current_status(run, layout, now, reports, demo and (demo[0], book.holder)),
+                                       now, params.get("hold_min", [None])[0])
                 except ClaimRefused as refused:
                     self._send_json(409, {"code": refused.code, "message": refused.message})
                     return
                 self._send_json(200, {"my_claim": claim})
             elif request.path == "/release":
+                mine = book.mine(driver_id)
+                if mine is not None and mine["phase"] == "arrived" and labels is not None:
+                    # "I've left" after a confirmed arrival: the stall should be free on the next photo after now
+                    # read with the demo cars in: a demo arrival shows as demo.car here, and leaves no label
+                    stall = current_status(run, layout, now, reports, demo and (demo[0], book.holder))["stalls"][mine["stall_id"]]
+                    if stall["source"] and stall["source"].startswith("camera."):
+                        labels.add(mine["stall_id"], "free", "driver_left", None, after=now.strftime("%Y-%m-%dT%H:%M:%SZ"))
                 book.release(driver_id, now)
                 self._send_json(200, {"my_claim": None})
             elif request.path == "/parked":
                 try:
-                    said = book.parked(driver_id, current_status(run, layout, now, reports), now, reports)
+                    said = book.parked(driver_id, current_status(run, layout, now, reports, demo and (demo[0], book.holder)), now, reports)
                 except ClaimRefused as refused:
                     self._send_json(409, {"code": refused.code, "message": refused.message})
                     return
                 self._send_json(200, said)
+            elif request.path == "/extend":
+                try:
+                    self._send_json(200, {"my_claim": book.extend(driver_id, params.get("minutes", [None])[0], now)})
+                except ClaimRefused as refused:
+                    self._send_json(409, {"code": refused.code, "message": refused.message})
             elif request.path == "/taken":
+                mine = book.mine(driver_id)
+                if mine is not None and labels is not None:
+                    stall = current_status(run, layout, now)["stalls"][mine["stall_id"]]
+                    if params.get("reason", [""])[0] == "found_car":
+                        # "There's a car in it": the driver is there and the camera said free: the camera was wrong
+                        labels.add(mine["stall_id"], "occupied", "driver_found_car", stall)
+                    elif stall["last_claim"] == "occupied":
+                        # "No, not me": a car is there, someone else's; the camera's newest reading saw it
+                        labels.add(mine["stall_id"], "occupied", "someone_else", stall)
                 book.taken(driver_id, now)
                 self._send_json(200, {"my_claim": None})
+            elif request.path == "/demo/park" and demo is not None:
+                self._send_json(200, demo[0].park(driver_id, book.mine(driver_id),
+                                                  current_status(run, layout, now, reports, (demo[0], book.holder))))
             elif request.path == "/report":
                 try:
                     free_count = int(params.get("free_count", [""])[0])
                     ev = reports.row_count(driver_id, params.get("zone_id", [""])[0], free_count, layout,
-                                           current_status(run, layout, now, reports), now)
+                                           current_status(run, layout, now, reports, demo and (demo[0], book.holder)), now)
                 except ValueError:
                     self._send_json(400, {"code": "bad_count", "message": "free_count must be a whole number."})
                     return
@@ -190,7 +235,8 @@ def make_handler(run, layout, clock, book, reports=None):
             lot_id = params.get("lot_id", [None])[0]
 
             try:
-                view = build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id, reports)
+                view = build_view(run, layout, clock, book, vehicle_class, driver_id, lot_id, reports, demo, forecaster,
+                                  labels)
             except ValueError as problem:  # unknown vehicle_class or lot_id: the caller's mistake, not ours
                 self.send_error(400, str(problem))
                 return
@@ -231,6 +277,8 @@ def main():
                         help="replay start, e.g. 2026-09-21T08:15:00-04:00 (default: the feed's first report)")
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--demo", action="store_true",
+                        help="replaying a recording for a demo: allow the watcher's own demo car (POST /demo/park)")
     args = parser.parse_args()
 
     # campus.json is found next to the package, so the server starts from any folder.
@@ -241,7 +289,18 @@ def main():
     start = args.now or first_observed(args.run / "feed.jsonl")
     clock = make_clock(start=start, speed=args.speed)
     print(f"Replay starts at {start}, speed {args.speed}", flush=True)
-    handler = make_handler(args.run, layout, clock, ClaimBook(), ReportBook())
+    # drivers' confirmations, for labels.py and vision.py, and the camera health check (graded levels from vision.py)
+    graded = {}
+    for g in (args.run.parent / "vision").glob("*.grade.json"):
+        try:
+            grade = json.loads(g.read_text(encoding="utf-8"))
+            graded[grade["lot_id"]] = float(grade.get("named_free_wrong", 0.0))
+        except (ValueError, KeyError):
+            continue
+    labels = LabelLog(args.run / "labels.jsonl", graded)
+    handler = make_handler(args.run, layout, clock, ClaimBook(labels), ReportBook(),
+                           (DemoBook(), args.speed) if args.demo else None,
+                           Forecaster(lambda t: current_status(args.run, layout, t)), labels)
 
     server = ThreadingHTTPServer(("localhost", args.port), handler)
 

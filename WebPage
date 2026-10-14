@@ -3,9 +3,21 @@
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpsConfigurator;
+import com.sun.net.httpserver.HttpsServer;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.security.KeyStore;
+import java.time.Duration;
+import java.util.concurrent.Executors;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +57,8 @@ public class WebPage {
         List<Stall> stalls = new ArrayList<>();
         // lot_id -> display name, in campus.json order (each lot becomes one pin on the map)
         Map<String, String> lotNames = new LinkedHashMap<>();
+        // lot_id -> who may park there (campus.json "permits"); the page uses it only when permits are switched on
+        Map<String, List<String>> lotPermits = new LinkedHashMap<>();
     }
 
     public static void main(String[] args) throws Exception {
@@ -58,7 +72,22 @@ public class WebPage {
                 new InetSocketAddress(myPort), 0);
 
         server.createContext("/", new MyHandler(page));
+        server.createContext("/api/", new ApiProxy());
+        server.setExecutor(Executors.newFixedThreadPool(8));   // the proxy waits on the data server: don't queue pages behind it
         server.start();
+
+        // HTTPS for phones (location and compass need it): only when run.py --phone made a certificate
+        String keystore = System.getenv("PARKFIND_HTTPS");
+        if (keystore != null && !keystore.isBlank()) {
+            HttpsServer https = HttpsServer.create(new InetSocketAddress(httpsPort), 0);
+            https.setHttpsConfigurator(new HttpsConfigurator(sslFrom(keystore,
+                    System.getenv().getOrDefault("PARKFIND_HTTPS_PASS", "parkfind"))));
+            https.createContext("/", new MyHandler(page));
+            https.createContext("/api/", new ApiProxy());
+            https.setExecutor(Executors.newFixedThreadPool(8));
+            https.start();
+            System.out.println("ParkFind WebPage (phones) running at https://<this computer's Wi-Fi address>:" + httpsPort);
+        }
 
         long adaCount = layout.stalls.stream().filter(s -> s.ada).count();
         long evCount = layout.stalls.stream().filter(s -> s.ev).count();
@@ -67,6 +96,65 @@ public class WebPage {
         System.out.println("Layout: " + layout.lotId + " (" + layout.lotNames.size() + " lots)");
         System.out.println("Stalls loaded: " + layout.stalls.size()
                 + " (ADA " + adaCount + ", EV " + evCount + ")");
+    }
+
+    static int httpsPort = 8443;
+
+    // why: phones need the page over HTTPS for location and the compass; the certificate is run.py --phone's.
+    // boundary: reads the PKCS12 keystore it is given; nothing else.
+    // ugly: the certificate is self-signed, so a phone warns once; a real deployment uses a real certificate.
+    static SSLContext sslFrom(String keystore, String password) throws Exception {
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        try (InputStream in = Files.newInputStream(Path.of(keystore))) {
+            store.load(in, password.toCharArray());
+        }
+        KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        keys.init(store, password.toCharArray());
+        SSLContext ssl = SSLContext.getInstance("TLS");
+        ssl.init(keys.getKeyManagers(), null, null);
+        return ssl;
+    }
+
+    // why: the page asks its own address (/api/...) instead of localhost:8765, which on a phone is the phone.
+    // boundary: forwards GET and POST unchanged to the data server on this computer, and its answer back.
+    // ugly: the data server down or slow is a 502 with a JSON reason, so the page shows "can't reach" as before.
+    static class ApiProxy implements HttpHandler {
+
+        static final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
+        static final String target = System.getenv().getOrDefault("PARKFIND_API", "http://localhost:8765");
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String path = exchange.getRequestURI().getRawPath().substring("/api".length());
+            String query = exchange.getRequestURI().getRawQuery();
+            HttpRequest.Builder ask = HttpRequest.newBuilder(URI.create(target + path + (query == null ? "" : "?" + query)))
+                    .timeout(Duration.ofSeconds(15));
+            if ("POST".equals(exchange.getRequestMethod())) {
+                ask.POST(HttpRequest.BodyPublishers.ofByteArray(exchange.getRequestBody().readAllBytes()));
+            } else {
+                ask.GET();
+            }
+            byte[] body;
+            int code;
+            String type;
+            try {
+                HttpResponse<byte[]> answer = client.send(ask.build(), HttpResponse.BodyHandlers.ofByteArray());
+                body = answer.body();
+                code = answer.statusCode();
+                type = answer.headers().firstValue("Content-Type").orElse("application/json");
+            } catch (IOException | InterruptedException e) {
+                body = "{\"code\": \"no_server\", \"message\": \"The data server is not answering.\"}".getBytes(StandardCharsets.UTF_8);
+                code = 502;
+                type = "application/json";
+            }
+            exchange.getResponseHeaders().set("Content-Type", type);
+            exchange.getResponseHeaders().set("Cache-Control", "no-store");
+            exchange.sendResponseHeaders(code, body.length == 0 ? -1 : body.length);
+            if (body.length > 0) {
+                exchange.getResponseBody().write(body);
+            }
+            exchange.getResponseBody().close();
+        }
     }
 
     static class MyHandler implements HttpHandler {
@@ -142,6 +230,7 @@ public class WebPage {
             int stallsPerRow = Integer.parseInt(perRow.group(1));
 
             List<String> rows = getStringArray(chunk, "rows");
+            layout.lotPermits.put(lotId, getStringArray(chunk, "permits"));
             List<String> adaStalls = getStringArray(chunk, "ada");
             List<String> evStalls = getStringArray(chunk, "ev");
 
@@ -243,8 +332,13 @@ public class WebPage {
                         + "\"stalls\":[" + String.join(",", stallJson) + "]}");
             }
 
+            List<String> permitJson = new ArrayList<>();
+            for (String permit : layout.lotPermits.getOrDefault(zone.getKey(), new ArrayList<>())) {
+                permitJson.add("\"" + esc(permit) + "\"");
+            }
             zoneJson.add("{\"id\":\"" + esc(zone.getKey()) + "\","
                     + "\"name\":\"" + esc(layout.lotNames.getOrDefault(zone.getKey(), zone.getKey())) + "\","
+                    + "\"permits\":[" + String.join(",", permitJson) + "],"
                     + "\"rows\":[" + String.join(",", rowJson) + "]}");
         }
 
@@ -1158,6 +1252,15 @@ ol.steps li {
 .btn.way:hover { background: #e8f0fe; }
 .btn.quiet { background: #f1f3f4; border-color: #dadce0; color: #3c4043; }
 .btn.quiet:hover { background: #e8eaed; }
+.no-permit { opacity: 0.35; }
+.lot-row.no-permit .lr-name::after { content: " \u00b7 not your permit"; color: #6b7280; font-size: 12px; }
+.permit-no { color: #c5221f; }
+.permit-chip { gap: 6px; }
+.permit-chip select { border: none; background: transparent; font: inherit; color: inherit; cursor: pointer; }
+.health-warn { color: #b45309; font-weight: bold; }
+.lot-row.health-flag .lr-name::before { content: "\u26a0 "; color: #b45309; }
+.me-eta { font-size: 12px; color: #1b8a3a; margin-top: 3px; }
+.me-eta.thin, .eta-thin { color: #b45309; }
 .foot-actions { display: flex; gap: 8px; flex-wrap: nowrap; margin-left: auto; }
 .win-foot .foot-actions .btn { margin: 0; white-space: nowrap; }
 .report-box { margin: 8px 0; padding: 8px 10px; border-radius: 8px; background: #f8faf9; border: 1px dashed #c7ccd3;
@@ -1259,6 +1362,30 @@ body.show-buildings .bpin { display: inline; }
 .closeup.collapsed .me-arrow { transform: rotate(-90deg); }
 .stall.best .stall-rect { stroke: #1a73e8; stroke-width: 4; stroke-dasharray: 4 3; }
 
+/* ---------- phones: one column, the trip card first, the close-up under the map, thumb-sized buttons ---------- */
+@media (max-width: 900px) {
+    .topbar { padding: 10px 12px 8px 12px; }
+    .top-row { flex-wrap: wrap; gap: 10px; }
+    .search { order: 3; flex-basis: 100%; max-width: none; font-size: 16px; }   /* 16px: iPhones don't zoom in */
+    .chips { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+    .chip { flex: none; }
+    .layout { padding: 10px; gap: 10px; }
+    .map-scroll { height: 56vh; min-height: 320px; }
+    .map-legend { display: none; }
+    .closeup { position: static; width: auto; margin: 8px; box-shadow: none; }
+    .closeup svg { height: 240px; }
+    .side-col { max-height: none; overflow: visible; }
+    .btn { min-height: 44px; }
+    .trip-card { margin: 0; }
+    .trip-actions .btn { flex: 1 1 40%; }
+    .win-back { position: fixed; padding: 0; z-index: 50; }
+    .win { width: 100%; height: 100%; border-radius: 0; }
+    .win-foot { gap: 10px; padding: 10px 12px; }
+    .win-legend { display: none; }
+    .foot-actions { flex-wrap: wrap; width: 100%; margin-left: 0; }
+    .foot-actions .btn { flex: 1 1 30%; }
+    .cu-ctrl button { width: 34px; height: 34px; }
+}
 </style>
 </head>
 
@@ -1576,6 +1703,7 @@ LAYOUT.zones.forEach(function (zone) {
     const z = {
         id: zone.id,
         name: zone.name,
+        permits: zone.permits || [],
         rows: zone.rows,
         x: cursorX,
         y: LOT_TOP + LOT_PAD + LOT_HEAD,
@@ -2099,9 +2227,35 @@ function setStatus(map) {
 // one id per browser tab, sent as driver_id. this Math.random is a session
 // token, not a stand-in for occupancy - the "no fake occupancy" rule is
 // about spot status, which never comes from Random anywhere in this file.
-const DRIVER_ID = "web-" + Math.random().toString(36).slice(2, 10);
+// kept in this browser, so a reload (or coming back to find your car hours later) keeps your claim
+const DRIVER_ID = (function () {
+    const fresh = "web-" + Math.random().toString(36).slice(2, 10);
+    try {
+        let id = window.localStorage.getItem("parkfind.driverId");
+        if (!id) {
+            id = fresh;
+            window.localStorage.setItem("parkfind.driverId", id);
+        }
+        return id;
+    } catch (e) {
+        return fresh;   // storage blocked: one id per page load, as before
+    }
+})();
 
-const SK_VIEW_URL = "http://localhost:8765/view";
+// Built but switched off until a campus needs them; this is the one place to switch them on.
+//   findMyCar  a parked driver can be routed back to their car (big lots, long stays)
+//   permits    only lots the driver's permit allows are offered (later: set by gate cameras, not a chip)
+// For a demo, add ?features=findMyCar,permits to the page address.
+const FEATURES = { findMyCar: false, permits: false };
+(new URLSearchParams(window.location.search).get("features") || "").split(",").forEach(function (f) {
+    if (Object.prototype.hasOwnProperty.call(FEATURES, f.trim())) {
+        FEATURES[f.trim()] = true;
+    }
+});
+
+// same address the page came from: the page server passes /api/ on to the data server (on a phone, localhost
+// would be the phone itself)
+const SK_VIEW_URL = "/api/view";
 
 let liveOk = false;    // did the last fetch succeed?
 let lastAsOf = null;   // as_of from the last good response
@@ -2216,8 +2370,15 @@ function fetchStatus() {
                 map[id] = stallInfo[id].state;
             });
             myClaim = data.my_claim || null;
+            demoInfo = data.demo || null;
+            forecasts = data.forecast || {};
+            cameraHealth = data.camera_health || {};
+            if (demoActive && demoDrive === null && myClaim === null && !demoHandoff) {
+                stopDemo();        // the demo car's claim ended (left, released, taken): back to real location
+            }
             noticeRelease(data.last_release);
-            if (myClaim !== null && myClaim.phase === "arrived" && route !== null && route.id === myClaim.stall_id) {
+            if (myClaim !== null && myClaim.phase === "arrived" && route !== null && route.id === myClaim.stall_id &&
+                !route.find) {
                 route = null;          // parked: no more directions to draw; the card keeps the spot
                 drawMapRoute();
                 showHelp();
@@ -2230,6 +2391,8 @@ function fetchStatus() {
             updateLotPins();
             renderMeCard();        // nearest lot with room can change with every update
             renderTripCard();
+            judgeCarSeen();        // a car in your spot: you (near) or someone else (far)?
+            maybeExtend();         // on the way and visibly closer, near the end of the hold: once
             maybeOpenNearest();
         })
         .catch(function () {
@@ -2332,10 +2495,12 @@ function renderLotList() {
         .filter(function (r) { return r.s !== null; })
         .sort(function (a, b) {
             const ua = a.s.cls === "p-unsure" ? 1 : 0, ub = b.s.cls === "p-unsure" ? 1 : 0;
-            return ua - ub || (b.s.free / b.s.total) - (a.s.free / a.s.total);
+            const pa = permitOk(a.z) ? 0 : 2, pb = permitOk(b.z) ? 0 : 2;   // lots you can't use go last
+            return pa - pb || ua - ub || (b.s.free / b.s.total) - (a.s.free / a.s.total);
         })
         .forEach(function (r) {
-            const row = h("div", "lot-row", undefined, box);
+            const row = h("div", "lot-row" + (permitOk(r.z) ? "" : " no-permit") +
+                            (healthWarning(r.z) !== null ? " health-flag" : ""), undefined, box);
             h("span", "lr-dot", undefined, row).style.background = PIN_HEX[r.s.cls];
             const nm = h("span", "lr-name", lotName(r.z), row);
             const far = metresToLot(r.z);
@@ -2448,6 +2613,8 @@ function updateLotPins() {
             return;
         }
         p.body.setAttribute("class", "lot-pin-body " + st.cls);
+        p.shape.classList.toggle("no-permit", !permitOk(z));
+        p.pin.classList.toggle("no-permit", !permitOk(z));
         // the paved area takes the pin's colour, so lots are found by eye before any label is read
         p.pave.style.fill = PIN_HEX[st.cls];
         p.pave.style.fillOpacity = 0.55;
@@ -2515,7 +2682,78 @@ function typeAllowed(id) {
 // a spot can be claimed only while a stall sensor sees it free and it suits the car (the server decides)
 function claimable(id) {
     const info = stallInfo[id];
-    return !!info && info.state === "free" && !info.held && !countedLot(stalls[id].zone) && typeAllowed(id);
+    return !!info && info.state === "free" && !info.held && !countedLot(stalls[id].zone) && typeAllowed(id) &&
+           permitOk(stalls[id].zone);
+}
+
+// ---------- permits (switched off unless FEATURES.permits) ----------
+// why: a lot the driver may not use is not an answer, however empty it is.
+// boundary: reads campus.json's permits per lot (via the layout) and the driver's choice; the server checks again.
+// ugly: "open_permit" lots take everyone; a lot with no permits listed is treated as open, never as closed.
+const PERMIT_NAMES = { any: "Any permit", commuter: "Commuter student", resident: "Resident student",
+                       faculty_staff: "Faculty / staff", visitor: "Visitor" };
+let myPermit = "any";
+try {
+    myPermit = window.localStorage.getItem("parkfind.permit") || "any";
+} catch (e) {
+    myPermit = "any";
+}
+
+function permitOk(z) {
+    return !FEATURES.permits || myPermit === "any" || z.permits.length === 0 ||
+           z.permits.indexOf("open_permit") >= 0 || z.permits.indexOf(myPermit) >= 0;
+}
+
+function permitWords(z) {
+    return z.permits.indexOf("open_permit") >= 0 ? "every permit"
+         : z.permits.map(function (p) { return PERMIT_NAMES[p] || p; }).join(", ");
+}
+
+// fetch rejects with a TypeError when the network fails; anything else reaching a .catch is a bug of ours
+function isNetworkError(err) {
+    return err instanceof TypeError && /fetch|network|load/i.test(String(err.message));
+}
+
+// why: ask the server to hold a spot about as long as the drive to it takes (claims.hold_window clamps 4-15 min).
+// boundary: sends whole minutes only, never where you are (CONTRACT); from the Main Gate when there is no location.
+// ugly: campus driving isn't 20 km/h the whole way (stop signs, crossings, finding the row): 1.3 x the drive + 3 min.
+const CAMPUS_KMH = 20;
+function holdMinutes(id) {
+    const m = approachMetres(stalls[id].zone);
+    if (m === null) {
+        return null;
+    }
+    return Math.ceil(m / (CAMPUS_KMH / 3.6) / 60 * 1.3) + 3;
+}
+
+// ---------- will it still have room when you get there? ----------
+// why: a lot "filling up" now may be full by the time you arrive; drivers need the lot that will still have room.
+// boundary: reads SK-VIEW "forecast" per lot (free now, how much a lot typically moves per minute) and the drive
+//           time to the lot; decides "may be gone" only, never a promise (parkfind/forecast.py says why).
+// ugly: the best guess for "free on arrival" is still "free now" (a trend line lost to it on every validation
+//       day); what we can say is the margin: fewer free spots than the lot's likely drift by then = may be gone.
+let forecasts = {};
+let cameraHealth = {};   // V-9: per camera lot, how often drivers contradicted the camera lately (SK-VIEW)
+
+// a camera drivers keep contradicting: say so wherever its spots are offered
+function healthWarning(z) {
+    const hl = cameraHealth[z.id];
+    return hl && hl.flag ? "Drivers recently found cars where this lot's camera said free (" + hl.disagree + " of " +
+                           hl.confirmations + "). Its free spots may be wrong." : null;
+}
+
+function etaMinutes(z) {
+    const m = approachMetres(z);
+    return m === null ? null : m / (CAMPUS_KMH / 3.6) / 60 * 1.3;
+}
+
+function arrival(z) {
+    const f = forecasts[z.id], eta = etaMinutes(z);
+    if (!f || eta === null) {
+        return null;
+    }
+    const drift = f.drift_per_min * Math.min(f.horizon_min, eta);
+    return { eta: Math.max(1, Math.round(eta)), free: f.free_now, mayBeGone: f.free_now <= Math.ceil(drift) };
 }
 
 // why: the one button that turns "our pick" into "yours": first press wins the spot on the server.
@@ -2523,16 +2761,25 @@ function claimable(id) {
 // ugly: someone else may claim it a second earlier; we say so and move on, we never retry the same spot.
 function claimSpot(id) {
     fetch(SK_VIEW_URL.replace("/view", "/claim") + "?stall_id=" + encodeURIComponent(id) +
-          "&driver_id=" + encodeURIComponent(DRIVER_ID) + "&vehicle_class=" + vehicleClass(), { method: "POST" })
+          "&driver_id=" + encodeURIComponent(DRIVER_ID) + "&vehicle_class=" + vehicleClass() +
+          (holdMinutes(id) !== null ? "&hold_min=" + holdMinutes(id) : "") +
+          (FEATURES.permits && myPermit !== "any" ? "&permit=" + encodeURIComponent(myPermit) : ""), { method: "POST" })
         .then(function (r) {
             return r.json().then(function (body) { return { ok: r.ok, body: body }; });
         })
         .then(function (res) {
             if (res.ok) {
                 myClaim = res.body.my_claim;
+                noteClaimStart();
                 route = { id: id, started: false, auto: false };
                 startRoute();
+                if (demoActive && demoDrive === null) {
+                    demoParked = false;
+                    startDemoDrive();   // the demo car was stopped (its spot was taken): drive on to the new one
+                }
+                demoHandoff = false;
             } else {
+                demoHandoff = false;
                 showToast("Couldn't claim that spot", res.body.message || "Try another spot.");
                 if (route !== null && route.id === id) {
                     route = null;
@@ -2541,7 +2788,11 @@ function claimSpot(id) {
             }
             fetchStatus();
         })
-        .catch(function () {
+        .catch(function (err) {
+            if (!isNetworkError(err)) {
+                console.error("ParkFind:", err);   // our bug, not the network: the claim itself may have worked
+                return;
+            }
             showToast("Couldn't reach ParkFind", "Your spot was not claimed. Check the connection and try again.");
         });
 }
@@ -2550,6 +2801,8 @@ function claimSpot(id) {
 // boundary: POST /release for this driver only; the map is cleared at once, the server catches up.
 // ugly: if the release request fails, the claim still times out on the server by its own rules.
 function releaseSpot() {
+    stopTakenTimer();
+    stopDemo();
     myClaim = null;
     renderTripCard();
     if (winOpen) {
@@ -2924,8 +3177,13 @@ function roadSteps(z) {
     const out = [];
     legs.forEach(function (leg, i) {
         const m = Math.max(5, Math.round(leg.len / 5) * 5);
-        if (leg.key === "join") {
-            out.push("Make your way to " + roadName(ROAD_LINES[legs[i + 1] ? legs[i + 1].key : 0]) + " (about " + m + " m).");
+        if (leg.key === "join" && (!legs[i + 1] || legs[i + 1].key === "lot")) {
+            // already at the lot: no road to join, just the last few metres in (no road name to look up)
+            out.push("You're at " + lotName(z) + ": make your way in (about " + m + " m).");
+        } else if (leg.key === "join") {
+            out.push("Make your way to " + roadName(ROAD_LINES[legs[i + 1].key]) + " (about " + m + " m).");
+        } else if (leg.key === "lot" && i > 0 && legs[i - 1].key === "join") {
+            // "You're at <lot>: make your way in" already said it
         } else if (leg.key === "lot") {
             out.push((i > 0 ? "Turn " + turnWord(legs[i - 1].dir, leg.dir) + " into " : "Drive into ") + lotName(z) + ".");
         } else if (i === 0 || legs[i - 1].key === "join") {
@@ -3140,8 +3398,11 @@ function nextManeuver(z) {
     const straight = now.dir[0] === next.dir[0] && now.dir[1] === next.dir[1];
     const word = straight ? "straight" : turnWord(now.dir, next.dir);
     const icon = word === "left" ? "↰" : word === "right" ? "↱" : "↑";
+    if (now.key === "join" && next.key === "lot") {
+        return { icon: "P", text: "You're at " + lotName(z) + ": make your way in", m: m };
+    }
     if (now.key === "join") {
-        return { icon: "↑", text: "Join " + roadName(ROAD_LINES[next.key === "lot" ? 0 : next.key]), m: m };
+        return { icon: "↑", text: "Join " + roadName(ROAD_LINES[next.key]), m: m };
     }
     if (next.key === "lot") {
         return { icon: icon, text: (straight ? "Continue" : "Turn " + word) + " into " + lotName(z), m: m };
@@ -3774,6 +4035,10 @@ function lotCard(item) {
     }
     h("span", "lot-name", lotName(z), head);
 
+    if (FEATURES.permits) {
+        h("div", "lot-sub" + (permitOk(z) ? "" : " permit-no"), (permitOk(z) ? "Permits: " : "Not your permit. This lot is for: ") +
+                                                                 permitWords(z), box);
+    }
     if (item.rank >= 0 && win.from && item.metres) {
         h("div", "lot-sub", "About " + item.metres + " m from " + win.from + " (straight line)", box);
     }
@@ -3785,6 +4050,15 @@ function lotCard(item) {
         badge.style.background = PIN_HEX[pinState.cls];
     }
 
+    if (healthWarning(z) !== null) {
+        h("div", "lot-sub health-warn", "\u26a0 " + healthWarning(z), box);
+    }
+    const arr = arrival(z);
+    if (arr !== null) {
+        h("div", "lot-sub" + (arr.mayBeGone ? " eta-thin" : ""), arr.mayBeGone
+            ? "Only " + arr.free + " free and you're about " + arr.eta + " min away: they may be gone when you arrive."
+            : "About " + arr.eta + " min away: it should still have room when you arrive.", box);
+    }
     const stats = lotStats(z);
     if (countedLot(z)) {
         const hasRows = z.rows.some(function (r) { return rowInfo[r.id] && rowInfo[r.id].free_count !== undefined; });
@@ -3869,7 +4143,12 @@ function refreshSelection() {
     } else {
         const st = stalls[route.id];
         h("div", "foot-main", spotName(route.id) + " · " + lotName(st.zone), info);
-        h("div", "foot-sub", route.started
+        const mine = myClaim !== null && myClaim.stall_id === route.id;
+        h("div", "foot-sub", mine && myClaim.phase === "arrived" ? "You're parked here. It stays yours until the sensor sees it empty."
+            : mine && myClaim.phase === "car_seen" ? "A car just parked here. Was that you?"
+            : mine ? "Held for you until " + campusClock(myClaim.deadline) + "." + (route.started ? "" : " Start route to drive there.")
+            : !permitOk(st.zone) ? "Your permit can't park in this lot. It is for: " + permitWords(st.zone) + "."
+            : route.started
             ? "Route started (solid blue)."
             : (claimable(route.id)
                 ? "Seen free. Claim it and nobody else is sent here."
@@ -3879,7 +4158,8 @@ function refreshSelection() {
     }
 
     const legend = h("div", "win-legend", undefined, winFoot);
-    [["Free", "#1b8a3a"], ["Taken", "#d62b2b"], ["Held", "#a78bfa"], ["Unknown", "#6b7280"], ["Counted, not watched", "#c7ccd3"]].forEach(function (l) {
+    [["Free", "#1b8a3a"], ["Taken", "#d62b2b"], ["Yours", "#1a73e8"], ["Held by others", "#a78bfa"], ["Unknown", "#6b7280"],
+     ["Counted, not watched", "#c7ccd3"]].forEach(function (l) {
         const s = h("span", "stat", undefined, legend);
         const dot = h("span", "k", undefined, s);
         dot.style.background = l[1];
@@ -3891,7 +4171,15 @@ function refreshSelection() {
     const cancel = h("button", "btn quiet", "Cancel", acts);
     cancel.addEventListener("click", closeWindow);
 
-    if (route !== null && myClaim !== null && myClaim.stall_id === route.id) {
+    if (route !== null && myClaim !== null && myClaim.stall_id === route.id && myClaim.phase === "arrived") {
+        const left = h("button", "btn danger", "I've left", acts);
+        left.addEventListener("click", releaseSpot);
+    } else if (route !== null && myClaim !== null && myClaim.stall_id === route.id && myClaim.phase === "car_seen") {
+        const yes = h("button", "btn go", "Yes, I parked", acts);
+        yes.addEventListener("click", saidParked);
+        const no = h("button", "btn danger", "No, not me", acts);
+        no.addEventListener("click", notMyCar);
+    } else if (route !== null && myClaim !== null && myClaim.stall_id === route.id) {
         const rel = h("button", "btn danger", "Release spot", acts);
         rel.addEventListener("click", releaseSpot);
         const go = h("button", "btn primary", route.started ? "Route started" : "Start route", acts);
@@ -3910,7 +4198,8 @@ function refreshSelection() {
         const claimBtn = h("button", "btn go", "Claim this spot", acts);
         claimBtn.disabled = !ok;
         claimBtn.title = ok ? "Hold this spot for you" : (route === null ? "Pick a spot first"
-                       : (!typeAllowed(route.id) ? "This is an " + stalls[route.id].type +
+                       : (!permitOk(stalls[route.id].zone) ? "Your permit can't park in this lot"
+                       : !typeAllowed(route.id) ? "This is an " + stalls[route.id].type +
                           " spot: pick the " + stalls[route.id].type + " tab if it is for you"
                        : "Only a spot seen free can be claimed"));
         claimBtn.addEventListener("click", function () {
@@ -3977,15 +4266,25 @@ function guaranteedSpots(z) {
 // boundary: reads the same status as the pins; distances from the real (unstretched) positions.
 // ugly: if no lot has a guaranteed spot, the nearest lot with room leads, clearly marked as not guaranteed.
 function lotSuggestions() {
-    let sure = null, room = null, any = null;
+    let sure = null, room = null, any = null, sureThin = null, roomThin = null;
     zones.forEach(function (z) {
         const d = metresToLot(z), st = lotPinState(z);
-        if (d === null || st === null) {
+        if (d === null || st === null || !permitOk(z)) {
             return;
         }
         const g = guaranteedSpots(z);
         if (any === null || d < any.d) {
             any = { z: z, d: d, sure: false, room: false };
+        }
+        const thin = arrival(z) !== null && arrival(z).mayBeGone;   // may be gone by the time you get there
+        if (thin && g > 0 && (sureThin === null || d < sureThin.d)) {
+            sureThin = { z: z, d: d, sure: true, room: true, n: g, thin: true };
+        }
+        if (thin && (st.cls === "p-plenty" || st.cls === "p-filling") && (roomThin === null || d < roomThin.d)) {
+            roomThin = { z: z, d: d, sure: g > 0, room: true, thin: true };
+        }
+        if (thin) {
+            return;
         }
         if (g > 0 && (sure === null || d < sure.d)) {
             sure = { z: z, d: d, sure: true, room: true, n: g };
@@ -3994,7 +4293,7 @@ function lotSuggestions() {
             room = { z: z, d: d, sure: g > 0, room: true };
         }
     });
-    const lead = sure || room || any;
+    const lead = sure || room || sureThin || roomThin || any;   // a lot with margin first; a thin one only if nothing else
     const closer = sure && room && !room.sure && room.d < sure.d ? room : null;
     return { lead: lead, closer: closer };
 }
@@ -4071,6 +4370,12 @@ function renderMeCard() {
                               : "Nearest lot (none has room): ")) + lotName(n.z), text);
             text.appendChild(document.createTextNode("About " + n.d + " m from you · " +
                              (n.sure ? n.n + " seen free by its camera" : lotPinState(n.z).label + " free")));
+            const arr = arrival(n.z);
+            if (arr !== null) {
+                h("div", "me-eta" + (arr.mayBeGone ? " thin" : ""), arr.mayBeGone
+                    ? "Only " + arr.free + " free and you're about " + arr.eta + " min away: they may be gone. Nothing nearby has more margin."
+                    : "About " + arr.eta + " min away: should still have room when you arrive.", text);
+            }
             const go = h("button", "btn", "Open", card);
             go.addEventListener("click", function () { openNearest(n); });
         }
@@ -4114,6 +4419,12 @@ function openNearest(n) {
 function onFix(pos) {
     const g = geoToPic(pos.coords.latitude, pos.coords.longitude);
     const inside = g.u > -CAMPUS_MARGIN && g.u < 690 + CAMPUS_MARGIN && g.v > -CAMPUS_MARGIN && g.v < 736 + CAMPUS_MARGIN;
+    if (demoActive) {
+        // the demo car is driving or parked: keep the real fix for when the demo ends, don't jump to it
+        realMe = { u: g.u, v: g.v, acc: pos.coords.accuracy || 50, onCampus: inside };
+        realGeo = inside ? "on" : "off_campus";
+        return;
+    }
     me = { u: g.u, v: g.v, acc: pos.coords.accuracy || 50, onCampus: inside };
     geoState = inside ? "on" : "off_campus";
     drawMe();
@@ -4131,7 +4442,7 @@ function onFix(pos) {
 // what the lots look like. Location can arrive before the first parking data; "none has room"
 // on no data at all would be a guess, so we wait for whichever comes second.
 function maybeOpenNearest() {
-    if (autoOpened || me === null || !me.onCampus || !liveOk || winOpen || route !== null) {
+    if (autoOpened || demoActive || me === null || !me.onCampus || !liveOk || winOpen || route !== null) {
         return;
     }
     autoOpened = true;
@@ -4236,7 +4547,11 @@ function postClaim(path, then) {
             }
             fetchStatus();
         })
-        .catch(function () {
+        .catch(function (err) {
+            if (!isNetworkError(err)) {
+                console.error("ParkFind:", err);
+                return;
+            }
             showToast("Couldn't reach ParkFind", "Nothing was changed. Check the connection and try again.");
         });
 }
@@ -4267,7 +4582,342 @@ function notMyCar() {
     });
 }
 
+// ---------- whose car was it? (answered from where you are, which never leaves the page) ----------
+// why: a camera sees *a* car in your spot, not *your* car. Where you are tells them apart: at the lot it is you,
+//      far away it is someone else, and every second spent asking is a second another driver can take the next spot.
+// boundary: reads myClaim (car_seen) and the driver's location; acts through the same calls the buttons use
+//           (POST /parked, POST /taken, claimSpot). Location is used here only, never sent (CONTRACT).
+// ugly: GPS can be 50 m off and a phone can lag a few seconds, so there is a grey band where we still ask, and
+//       "someone took it" waits 5 seconds with "That was me" on screen before acting.
+const NEAR_M = 60, FAR_M = 120, TAKEN_WAIT_S = 5;
+let judged = null;      // the claim we already decided about: stall_id + claimed_at, so each is decided once
+let takenTimer = null;  // the 5-second countdown before we let the spot go and claim another
+let takenAt = 0;
+
+function metresFromLot(id) {
+    const m = markerFor(stalls[id].zone);
+    if (me === null || !me.onCampus || !m) {
+        return null;
+    }
+    const dx = Math.max(m.x - me.u, 0, me.u - (m.x + m.w)), dy = Math.max(m.y - me.v, 0, me.v - (m.y + m.h));
+    return Math.round(Math.hypot(dx, dy) * M_PER_UNIT);
+}
+
+function judgeCarSeen() {
+    if (myClaim === null || myClaim.phase !== "car_seen" || myClaim.said_parked) {
+        return;
+    }
+    const key = myClaim.stall_id + "@" + myClaim.claimed_at;
+    if (judged === key) {
+        return;
+    }
+    const d = metresFromLot(myClaim.stall_id);
+    if (d === null) {
+        return;                          // no location: the card asks "Was that you?"
+    }
+    const slack = Math.min(80, me.acc);  // a rough fix widens both bands
+    judged = key;   // decided once, from where you were when the car appeared: driving closer later doesn't make it yours
+    if (d <= NEAR_M + slack) {
+        saidParked();                    // the camera still has the last word on the server
+    } else if (d >= FAR_M + 2 * slack) {
+        takenAt = Date.now();
+        takenTimer = setInterval(function () {
+            if (Date.now() - takenAt >= TAKEN_WAIT_S * 1000) {
+                findAnotherNow();
+            } else {
+                renderTripCard();
+            }
+        }, 1000);
+        renderTripCard();
+    }
+}
+
+function stopTakenTimer() {
+    if (takenTimer !== null) {
+        clearInterval(takenTimer);
+        takenTimer = null;
+    }
+}
+
+function thatWasMe() {
+    stopTakenTimer();
+    saidParked();
+}
+
+// why: let the taken spot go and hold the best one left, in one move, so the driver keeps driving.
+// boundary: POST /taken, then asks guidance (fresh SK-VIEW) for a stall in the same lot, else in the nearest lot
+//           with a guaranteed spot, and claims it with claimSpot (which redraws the route).
+// ugly: if guidance names no single spot anywhere near, we open the lot instead of guessing a spot.
+function findAnotherNow(reason) {
+    stopTakenTimer();
+    if (myClaim === null) {
+        return;
+    }
+    const lost = myClaim.stall_id;
+    demoHandoff = demoActive;
+    // reason "found_car": the driver is at the spot and a car is in it although the camera said free (V-9)
+    postClaim("/taken" + (reason === "found_car" ? "?reason=found_car" : ""), function () {
+        myClaim = null;
+        const sameLot = stalls[lost].zone;
+        // never the spot we just let go: after "There's a car in it" the camera still calls it free, so guidance
+        // would name it again; then take the next live, free spot this car may use in that lot
+        const ask = function (z) {
+            return fetch(viewUrl(z.id)).then(function (r) { return r.json(); }).then(function (v) {
+                if (v.answer && v.answer.grain === "stall" && v.answer.stall_id !== lost) {
+                    return v.answer.stall_id;
+                }
+                const st = v.status.stalls;
+                return z.ids.filter(function (k) {
+                    return k !== lost && st[k] && st[k].state === "free" && !st[k].held && typeAllowed(k) &&
+                           (st[k].cadence_class === "continuous" || st[k].cadence_class === "near_live");
+                }).sort()[0] || null;
+            });
+        };
+        ask(sameLot).then(function (id) {
+            if (id !== null) {
+                return id;
+            }
+            const sug = lotSuggestions().lead;
+            return sug && sug.sure && sug.z !== sameLot ? ask(sug.z) : null;
+        }).then(function (id) {
+            if (id === null) {
+                demoHandoff = false;
+                showToast("Someone took your spot", "Another car parked in " + spotName(lost) +
+                          ". No single spot can be promised nearby right now, so here is the lot.");
+                route = null;
+                drawMapRoute();
+                openLotOf(lost, "Your spot was taken. Pick another one here.");
+                return;
+            }
+            claimSpot(id);
+            showToast(reason === "found_car" ? "Thanks, noted" : "Someone took your spot",
+                      (reason === "found_car" ? "We've noted that the camera missed the car in " + spotName(lost) + ". "
+                                              : "Another car parked in " + spotName(lost) + ". ") + "We're holding " +
+                      (stalls[id].zone === sameLot ? spotName(id) + " in the same lot" : spotName(id) + " in " + lotName(stalls[id].zone)) +
+                      " for you instead; the route is updated.");
+        }).catch(function () {
+            showToast("Someone took your spot", "We couldn't reach ParkFind to find another. Open a lot to pick one.");
+        });
+    });
+}
+
+// why: in a big lot, or after a long day, people forget where they parked; the claim still knows.
+// boundary: draws the route from where you are to your own parked spot (the same trip and lot-window path as
+//           any route); nothing is sent anywhere. Switched off unless FEATURES.findMyCar.
+// ugly: the trip follows roads (it was built for driving); inside the lot, the lot window shows the exact spot.
+function findMyCar() {
+    if (myClaim === null) {
+        return;
+    }
+    route = { id: myClaim.stall_id, started: true, auto: false, find: true };
+    drawMapRoute();
+    showRoute();
+}
+
+function foundIt() {
+    route = null;
+    drawMapRoute();
+    showHelp();
+}
+
+// ---------- demo drive (only when the server replays a recording: SK-VIEW "demo") ----------
+// why: a recorded day cannot contain the person watching it, so in a demo your dot drives the real route
+//      and, at the lot, the camera sees your car; every step after that is the product's own logic.
+// boundary: moves `me` along tripTo() (picture units) at campus speed, then POST /demo/park; real location
+//           is ignored while the demo car exists. Nothing here runs unless the server says demo.
+// ugly: the clock is the replay's: 20 km/h on campus is 20 km/h x speed on screen, so a 10x replay drives
+//       800 m in about 14 seconds. Recorded cars still play: one may take your spot while you drive.
+const DEMO_KMH = CAMPUS_KMH;   // the demo car drives at the speed the hold was sized for
+let demoInfo = null;     // SK-VIEW "demo": { speed } or null
+let demoDrive = null;    // { pts, cum, total, t0, stall } while driving
+let demoParked = false;  // the demo car is in the lot: keep `me` there until you leave
+let realMe = null;       // the last real location fix, restored when the demo ends
+let realGeo = null;
+let demoActive = false;  // driving or parked: real location waits
+let demoHandoff = false; // between letting a taken spot go and holding the next: the demo car is still on campus
+
+function tripMetres(trip) {
+    let m = 0;
+    for (let i = 1; i < trip.length; i++) {
+        m += Math.hypot(trip[i].u - trip[i - 1].u, trip[i].v - trip[i - 1].v) * M_PER_UNIT;
+    }
+    return m;
+}
+
+function startDemoDrive() {
+    if (myClaim === null || demoInfo === null) {
+        return;
+    }
+    const trip = tripTo(stalls[myClaim.stall_id].zone);
+    if (trip === null) {
+        return;
+    }
+    if (trip.length < 2) {
+        trip.push(trip[0]);   // already in the lot (the next spot is in the same one): arrive at once
+    }
+    const cum = [0];
+    for (let i = 1; i < trip.length; i++) {
+        cum.push(cum[i - 1] + Math.hypot(trip[i].u - trip[i - 1].u, trip[i].v - trip[i - 1].v) * M_PER_UNIT);
+    }
+    if (!demoActive) {
+        realMe = me;         // a second drive (your spot was taken on the way) starts from where the car is
+        realGeo = geoState;
+    }
+    demoActive = true;
+    if (claimFromMetres === null) {
+        claimFromMetres = Math.round(tripMetres(trip));   // the drive starts here: progress counts from here
+    }
+    demoDrive = { pts: trip, cum: cum, total: cum[cum.length - 1], t0: performance.now(), stall: myClaim.stall_id };
+    if (route === null || route.id !== myClaim.stall_id) {
+        route = { id: myClaim.stall_id, started: true, auto: false };
+    }
+    route.started = true;
+    requestAnimationFrame(demoStep);
+}
+
+function demoStep(t) {
+    if (demoDrive === null) {
+        return;
+    }
+    if (myClaim === null) {
+        stopDemo();               // released while driving: the drive is over
+        return;
+    }
+    if (myClaim.stall_id !== demoDrive.stall) {
+        demoDrive = null;         // your spot was taken on the way and another is held: drive on to it
+        startDemoDrive();
+        return;
+    }
+    const metres = (t - demoDrive.t0) / 1000 * demoInfo.speed * DEMO_KMH / 3.6;
+    const d = Math.min(metres, demoDrive.total);
+    let i = 1;
+    while (i < demoDrive.cum.length - 1 && demoDrive.cum[i] < d) {
+        i++;
+    }
+    const a = demoDrive.pts[i - 1], b = demoDrive.pts[i];
+    const k = (d - demoDrive.cum[i - 1]) / Math.max(1e-6, demoDrive.cum[i] - demoDrive.cum[i - 1]);
+    me = { u: a.u + (b.u - a.u) * k, v: a.v + (b.v - a.v) * k, acc: 5, onCampus: true };
+    geoState = "on";
+    // redraw about five times a second: smooth enough, and the route is recomputed from the new spot each time
+    if (!demoDrive.drawn || t - demoDrive.drawn > 200) {
+        demoDrive.drawn = t;
+        demoDrive.left = Math.round(demoDrive.total - d);
+        drawMe();
+        drawMapRoute();
+        renderTripCard();
+    }
+    if (d >= demoDrive.total) {
+        demoDrive = null;
+        demoParked = true;
+        drawMe();
+        drawMapRoute();
+        postClaim("/demo/park", function (res) {
+            if (res.ok && res.body.result === "slow") {
+                showToast("You've arrived", res.body.message);
+            }
+            if (res.ok && res.body.result === "occupied") {
+                stopTakenTimer();
+                findAnotherNow();   // a car beat us to it: hold the next spot; claimSpot drives the demo car on
+            }
+            renderTripCard();
+        });
+        return;
+    }
+    requestAnimationFrame(demoStep);
+}
+
+// the demo is over (you left, released, or the spot went to someone else): back to real location
+function stopDemo() {
+    demoDrive = null;
+    if (demoActive) {
+        demoActive = false;
+        demoParked = false;
+        me = realMe;
+        geoState = realGeo;
+        realMe = null;
+        drawMe();
+        renderMeCard();
+        drawCloseup();
+    }
+}
+
+// ---------- one extension for a driver visibly on the way ----------
+// why: someone stuck behind a bus should not lose the spot they are clearly driving to.
+// boundary: near the end of a hold, compares the road distance now with the road distance when claimed (both
+//           computed here, never sent) and asks POST /extend once; the server allows one, 2-5 minutes.
+// ugly: polls are 5 seconds apart, which is up to a few campus minutes in a fast replay, so "near the end" is
+//       at least two polls wide; with no location there is no evidence of progress, so no extension.
+let claimFromMetres = null;   // road metres to the lot when the claim began (or when the demo drive began)
+let extendAsked = null;       // the claim we already asked for, so each claim asks once
+
+function noteClaimStart() {
+    if (myClaim === null || me === null || !me.onCampus) {
+        claimFromMetres = null;
+        return;
+    }
+    claimFromMetres = approachMetres(stalls[myClaim.stall_id].zone);
+}
+
+function maybeExtend() {
+    if (myClaim === null || myClaim.phase !== "held" || myClaim.said_parked || myClaim.extended ||
+        claimFromMetres === null || me === null || !me.onCampus || lastAsOf === null) {
+        return;
+    }
+    const key = myClaim.stall_id + "@" + myClaim.claimed_at;
+    const left_s = (Date.parse(myClaim.deadline) - Date.parse(lastAsOf)) / 1000;
+    const speed = demoInfo !== null ? demoInfo.speed : 10;
+    if (extendAsked === key || left_s <= 0 || left_s > Math.max(90, 2 * 5 * speed + 30)) {
+        return;
+    }
+    const now = approachMetres(stalls[myClaim.stall_id].zone), d = metresFromLot(myClaim.stall_id);
+    if (now === null || now > claimFromMetres - 50 || (d !== null && d <= NEAR_M)) {
+        return;   // not visibly closer, or already there (then the camera decides, not the clock)
+    }
+    extendAsked = key;
+    const minutes = Math.max(2, Math.min(5, Math.ceil(now / (CAMPUS_KMH / 3.6) / 60 * 1.3) + 1));
+    postClaim("/extend?minutes=" + minutes, function (res) {
+        if (res.ok) {
+            myClaim = res.body.my_claim;
+            showToast("Held a little longer", "You're on your way, so " + spotName(myClaim.stall_id) +
+                      " is held until " + campusClock(myClaim.deadline) + ". This happens once per spot.");
+            renderTripCard();
+        }
+    });
+}
+
+// on a phone the right column sits under the map, so the trip card moves above the map instead
+function placeTripCard() {
+    const card = document.getElementById("tripCard");
+    const layout = document.querySelector(".layout"), mapBox = document.querySelector(".map-box");
+    const col = document.querySelector(".side-col");
+    if (window.innerWidth <= 900 && card.parentNode !== layout) {
+        layout.insertBefore(card, mapBox);
+    } else if (window.innerWidth > 900 && card.parentNode !== col) {
+        col.insertBefore(card, col.firstChild);
+    }
+}
+window.addEventListener("resize", placeTripCard);
+
+// keep the screen on while driving somewhere (phones that allow it); let it sleep again otherwise
+let wakeLock = null;
+function keepAwake(on) {
+    if (on && wakeLock === null && navigator.wakeLock && document.visibilityState === "visible") {
+        navigator.wakeLock.request("screen").then(function (lock) {
+            wakeLock = lock;
+            lock.addEventListener("release", function () { wakeLock = null; });
+        }).catch(function () { /* not allowed here (no HTTPS, battery saver): the screen just behaves as usual */ });
+    } else if (!on && wakeLock !== null) {
+        wakeLock.release();
+        wakeLock = null;
+    }
+}
+document.addEventListener("visibilitychange", function () {
+    keepAwake(route !== null && route.started);   // a lock ends when the tab is hidden; take it again on return
+});
+
 function renderTripCard() {
+    placeTripCard();
+    keepAwake(route !== null && route.started);
     const tripCard = document.getElementById("tripCard");   // looked up here: this can run before the script ends
     while (tripCard.firstChild) {
         tripCard.removeChild(tripCard.firstChild);
@@ -4282,13 +4932,24 @@ function renderTripCard() {
     tripCard.classList.add("trip-" + phase);
     const short = spotName(id);
     const words = {
-        held: ["Held for you until " + (myClaim ? campusClock(myClaim.deadline) : ""),
+        held: demoDrive !== null
+            ? ["Driving there (demo)", (demoDrive.left !== undefined ? demoDrive.left + " m to go. " : "") +
+               "Held until " + campusClock(myClaim.deadline) + "."]
+            : ["Held for you until " + (myClaim ? campusClock(myClaim.deadline) : ""),
+               (myClaim ? (myClaim.extended ? "Extended once because you're on your way. "
+                                            : "Held " + Math.round(myClaim.window_s / 60) + " min, sized to your drive. ") : "") +
                "If no car reaches it by then, it goes back to other drivers."],
         waiting: ["Waiting for the camera",
                   "You said you've parked. We confirm when the camera sees your car (held until " +
                   (myClaim ? campusClock(myClaim.deadline) : "") + ")."],
-        car_seen: ["A car just parked in " + short, "Was that you?"],
-        arrived: ["Parked: " + short, "It stays yours until the sensor sees it empty."],
+        car_seen: takenTimer !== null
+            ? ["Someone else parked in " + short, "You're about " + metresFromLot(id) + " m away, so that wasn't you. " +
+               "Finding you another spot in " + Math.max(1, TAKEN_WAIT_S - Math.floor((Date.now() - takenAt) / 1000)) + " s\u2026"]
+            : ["A car just parked in " + short, "Was that you?"],
+        arrived: route !== null && route.find
+            ? ["Finding your car: " + short, (metresFromLot(id) !== null ? "About " + metresFromLot(id) + " m to " +
+               lotName(stalls[id].zone) + ". " : "") + "Follow the blue line; Show lot shows the exact spot."]
+            : ["Parked: " + short, "It stays yours until the sensor sees it empty."],
         way: ["Showing the way (not held)", "Anyone can still take this spot. Claim it from the lot to hold it."]
     }[phase];
     h("div", "trip-where", lotName(stalls[id].zone) + " · " + short, tripCard);
@@ -4311,12 +4972,26 @@ function renderTripCard() {
         b.addEventListener("click", fn);
         return b;
     };
-    if (phase === "held") {
-        btn("I've parked", "go", saidParked);
+    if (phase === "held" && demoInfo !== null && demoDrive === null && !demoParked) {
+        btn("Drive there (demo)", "way", startDemoDrive);
     }
-    if (phase === "car_seen") {
+    if (phase === "held" && demoDrive === null) {
+        btn("I've parked", "go", saidParked);
+        btn("There's a car in it", "danger", function () { findAnotherNow("found_car"); });
+    }
+    if (phase === "car_seen" && takenTimer !== null) {
+        btn("Find another now", "go", findAnotherNow);
+        btn("That was me", "quiet", thatWasMe);
+    } else if (phase === "car_seen") {
         btn("Yes, I parked", "go", saidParked);
         btn("No, not me", "danger", notMyCar);
+    }
+    if (phase === "arrived" && FEATURES.findMyCar) {
+        if (route !== null && route.find) {
+            btn("Found it", "quiet", foundIt);
+        } else {
+            btn("Find my car", "way", findMyCar);
+        }
     }
     if (myClaim !== null && phase !== "car_seen") {
         btn(phase === "arrived" ? "I've left" : "Release spot", "danger", releaseSpot);
@@ -4476,6 +5151,28 @@ function drawChips() {
     });
     h("span", "chip-divider", undefined, chipBox);   // the switch is about the map, not the car
     chipBox.appendChild(sw);
+    if (FEATURES.permits) {
+        const pc = h("label", "chip permit-chip", "Parking as ", chipBox);
+        const sel = h("select", undefined, undefined, pc);
+        Object.keys(PERMIT_NAMES).forEach(function (k) {
+            const o = h("option", undefined, PERMIT_NAMES[k], sel);
+            o.value = k;
+        });
+        sel.value = myPermit;
+        sel.addEventListener("change", function () {
+            myPermit = sel.value;
+            try {
+                window.localStorage.setItem("parkfind.permit", myPermit);
+            } catch (e) {
+                // not remembered; still applies now
+            }
+            updateLotPins();
+            renderMeCard();
+            if (winOpen) {
+                renderWindow();
+            }
+        });
+    }
 }
 
 const searchBox = document.getElementById("search");

@@ -7,6 +7,7 @@ ParkFind in one command: data, server, page, browser, and a live board in the te
     python run.py --fresh         # make a new day of data first (and re-read the camera photos)
     python run.py --speed 60      # faster replay (claims' 8-minute window becomes 8 seconds)
     python run.py --no-browser    # start everything, open nothing
+    python run.py --phone         # also serve https://<laptop Wi-Fi address>:8443 for a phone on the same Wi-Fi
 
 Ctrl+C stops everything. The two servers write to out/logs/, so this terminal stays readable.
 
@@ -24,6 +25,7 @@ import argparse
 import bisect
 import heapq
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -201,11 +203,52 @@ def feed_span(feed: Path) -> tuple[datetime, datetime]:
     raise SystemExit(f"{feed} has no readable reports")
 
 
+PHONE = HERE / "out" / "phone"
+PHONE_PASS = "parkfind"   # protects a throwaway demo certificate, not a secret
+
+
+def lan_address() -> str | None:
+    """why: the phone reaches the laptop by its Wi-Fi address, not localhost.
+    boundary: asks the operating system which address it would use to reach the internet; sends nothing (UDP connect).
+    ugly: no network, or only a VPN, can give an address the phone can't reach; the printout says to check.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))   # a documentation-only address: nothing is sent
+            return s.getsockname()[0]
+        except OSError:
+            return None
+
+
+def phone_certificate(ip: str) -> Path:
+    """why: phones give location and the compass only to HTTPS pages, so the page needs a certificate for this address.
+    boundary: runs Java's own keytool (it comes with Java); writes out/phone/parkfind.p12 and the address it is for.
+    ugly: self-signed, so the phone warns once ("not private"): accept it for this demo. A new Wi-Fi address means
+          a new certificate (the old one is replaced).
+    """
+    keytool = shutil.which("keytool")
+    if keytool is None:
+        raise SystemExit("keytool was not found (it comes with Java). Install a full Java (JDK) 17 or newer for --phone.")
+    PHONE.mkdir(parents=True, exist_ok=True)
+    store, made_for = PHONE / "parkfind.p12", PHONE / "address.txt"
+    if store.exists() and made_for.exists() and made_for.read_text().strip() == ip:
+        return store
+    if store.exists():
+        store.unlink()
+    subprocess.run([keytool, "-genkeypair", "-alias", "parkfind", "-keyalg", "RSA", "-keysize", "2048", "-validity", "365",
+                    "-storetype", "PKCS12", "-keystore", str(store), "-storepass", PHONE_PASS, "-keypass", PHONE_PASS,
+                    "-dname", "CN=ParkFind demo", "-ext", f"SAN=ip:{ip},ip:127.0.0.1,dns:localhost"],
+                   check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    made_for.write_text(ip)
+    return store
+
+
 class Stack:
     """The two servers this launcher owns: started together, stopped together."""
 
-    def __init__(self, speed: float):
+    def __init__(self, speed: float, phone_store: Path | None = None):
         self.speed = speed
+        self.phone_store = phone_store
         self.server: subprocess.Popen | None = None
         self.page: subprocess.Popen | None = None
         LOGS.mkdir(parents=True, exist_ok=True)
@@ -213,13 +256,17 @@ class Stack:
     def start_server(self) -> None:
         log = LOGS / "server.log"
         self.server = subprocess.Popen(
-            [sys.executable, "-m", "parkfind.server", "--run", str(RUN), "--speed", str(self.speed)],
+            # --demo: this is always a replayed recording, so the watcher may drive a demo car to their spot
+            [sys.executable, "-m", "parkfind.server", "--run", str(RUN), "--speed", str(self.speed), "--demo"],
             cwd=HERE, stdout=log.open("w", encoding="utf-8"), stderr=subprocess.STDOUT)
         wait_until_up(VIEW_URL, 30, self.server, "The data server", log)
 
     def start_page(self) -> None:
         log = LOGS / "page.log"
-        self.page = subprocess.Popen(["java", "--source", "17", "WebPage"], cwd=HERE,
+        env = dict(os.environ)
+        if self.phone_store is not None:
+            env.update(PARKFIND_HTTPS=str(self.phone_store), PARKFIND_HTTPS_PASS=PHONE_PASS)
+        self.page = subprocess.Popen(["java", "--source", "17", "WebPage"], cwd=HERE, env=env,
                                      stdout=log.open("w", encoding="utf-8"), stderr=subprocess.STDOUT)
         wait_until_up(PAGE_URL, 90, self.page, "The page", log)
 
@@ -256,7 +303,7 @@ def board_line(view: dict, utc_offset: str) -> str:
     parts = []
     total_free = total = 0
     for lot_id, lot in view["status"]["lots"].items():
-        short = lot["name"].split(" · ")[0]
+        short = lot["name"].split(" · ")[0] + (" (camera?)" if view.get("camera_health", {}).get(lot_id, {}).get("flag") else "")
         if lot["unknown"] <= lot["total"] / 2:
             text = f"{lot['free']}/{lot['total']}"
             total_free += lot["free"]
@@ -281,6 +328,7 @@ def main() -> None:
     p.add_argument("--fresh", action="store_true", help="make a new day of simulated data first")
     p.add_argument("--no-browser", action="store_true", help="do not open the browser")
     p.add_argument("--quiet", action="store_true", help="no live board, just start and wait")
+    p.add_argument("--phone", action="store_true", help="also serve the page over HTTPS for a phone on the same Wi-Fi")
     args = p.parse_args()
 
     if shutil.which("java") is None:
@@ -299,7 +347,10 @@ def main() -> None:
     day_real_s = (end - start).total_seconds() / args.speed
     utc_offset = json.loads((HERE / "campus.json").read_text(encoding="utf-8")).get("utc_offset", "+00:00")
 
-    stack = Stack(args.speed)
+    phone_ip = lan_address() if args.phone else None
+    if args.phone and phone_ip is None:
+        raise SystemExit("--phone: this computer has no network address a phone could reach. Join the Wi-Fi first.")
+    stack = Stack(args.speed, phone_certificate(phone_ip) if args.phone else None)
     try:
         print("Starting the data server ...", end=" ", flush=True)
         stack.start_server()
@@ -307,6 +358,10 @@ def main() -> None:
         print("Starting the page (Java compiles it the first time) ...", end=" ", flush=True)
         stack.start_page()
         print(f"up at {PAGE_URL}")
+        if phone_ip is not None:
+            print(f"\nOn your phone (same Wi-Fi): https://{phone_ip}:8443\n"
+                  "  The phone warns once that the connection isn't private (our own demo certificate): accept it.\n"
+                  "  If it can't connect, allow Java on private networks when Windows asks (or in the firewall).")
         if not args.no_browser:
             webbrowser.open(PAGE_URL)
         print(f"\nParkFind is running: a campus day every {day_real_s / 60:.0f} real minutes at {args.speed:g}x. "

@@ -139,18 +139,19 @@ def features(patches, refs, shapes) -> np.ndarray:
 MODELS = ("median", "per_light")   # one empty look per stall, or one per kind of light (sunny / cloudy / rainy)
 
 
-def train(cam: dict, shapes, model_path: Path, model: str) -> None:
-    """why: learn each stall's empty look(s) and the car/no-car line from the tuning photos and their labels.
-    boundary: reads tuning photos only; writes model_path. Validation, replayed and exam days are never used here.
-    ugly: a stall never labelled empty on the tuning days has no empty look; training stops and says which.
-          per_light keeps a look only for light seen empty at least 3 times, else falls back to the one median.
+def train(cam: dict, shapes, model_path: Path, model: str, extra: list | None = None) -> None:
+    """why: learn each stall's empty look(s) and the car/no-car line from the tuning photos and their labels,
+            plus drivers' confirmations when given (extra: photos where only the confirmed stalls are labelled).
+    boundary: reads tuning photos (and extra); writes model_path. Validation and exam days are never used here.
+    ugly: a stall never labelled empty has no empty look; training stops and says which. per_light keeps a look
+          only for light seen empty at least 3 times. Confirmations count as their own "day" in the cross-day test.
     """
     sids = [str(s["space_id"]) for s in cam["spaces"]]
     seen, days, light = [], [], []
-    for photo in cam["tuning"]:
+    for photo in cam["tuning"] + (extra or []):
         p = crops(HERE / photo["file"], cam, shapes)
         if p is not None:
-            seen.append((p, [photo["labels"][sid] for sid in sids]))
+            seen.append((p, [photo["labels"].get(sid) for sid in sids]))   # None: nobody said, for this stall
             days.append(photo.get("day", Path(photo["file"]).name[:10]))
             light.append(photo.get("weather", "unknown"))
     refs = np.empty(len(shapes), dtype=object)
@@ -163,9 +164,11 @@ def train(cam: dict, shapes, model_path: Path, model: str) -> None:
             by_light = [[z for z, w in empty if w == kind] for kind in sorted({w for _, w in empty})]
             looks = [np.median(np.stack(zs), axis=0) for zs in by_light if len(zs) >= 3] or looks
         refs[k] = looks
-    X = np.concatenate([features(p, refs, shapes) for p, _ in seen])
-    y = np.concatenate([np.array(labels) for _, labels in seen]).astype(float)
-    day = np.concatenate([np.full(len(sids), d) for (_, _), d in zip(seen, days)])
+    feats = [features(p, refs, shapes) for p, _ in seen]
+    known = [(i, k) for i, (_, labels) in enumerate(seen) for k in range(len(sids)) if labels[k] is not None]
+    X = np.array([feats[i][k] for i, k in known])
+    y = np.array([seen[i][1][k] for i, k in known], dtype=float)
+    day = np.array([days[i] for i, _ in known])
 
     # How cautious this camera must be, decided on the tuning days alone: learn on one day, read the
     # other, and take the lowest "occupied" line that keeps wrong "free" calls under the limit.
@@ -180,7 +183,7 @@ def train(cam: dict, shapes, model_path: Path, model: str) -> None:
             caution = float(t)   # the highest line that still meets the limit: as many honest "free" as possible
     # The same test, stall by stall. A camera-wide average hides a stall the camera always misreads (glare,
     # a tree, the far edge of the picture), and guidance names exactly that stall once the rest fill up.
-    stall_of = np.tile(np.arange(len(sids)), len(seen))
+    stall_of = np.array([k for _, k in known])
     trusted = []
     for k in range(len(sids)):
         said_free = (stall_of == k) & (probs <= caution)
@@ -190,7 +193,7 @@ def train(cam: dict, shapes, model_path: Path, model: str) -> None:
     model_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(model_path, w=w, mu=mu, sd=sd, caution=caution, refs=refs,
                         trusted=np.array(trusted), model=model)
-    print(f"  learned from {len(seen)} tuning photos ({int(y.sum())} occupied / {int(len(y) - y.sum())} free stall views); "
+    print(f"  learned from {len(seen)} photos{' (with drivers confirmations)' if extra else ''} ({int(y.sum())} occupied / {int(len(y) - y.sum())} free stall views); "
           f"says occupied above {caution:.2f}; {sum(trusted)} of {len(sids)} stalls trusted to be named")
 
 
@@ -278,6 +281,7 @@ def main() -> None:
     ap.add_argument("--model", choices=MODELS, help="override the camera file's model (for --validate)")
     ap.add_argument("--validate", action="store_true", help="grade the validation day only; writes nothing")
     ap.add_argument("--exam", action="store_true", help="grade the exam day once; writes <lot>.exam.json")
+    ap.add_argument("--with-labels", help="drivers' confirmations to learn from too (labels.py output, out/labels/<lot>.json)")
     args = ap.parse_args()
 
     cam_path = Path(args.camera)
@@ -286,10 +290,15 @@ def main() -> None:
     model = args.model or cam.get("model", "median")
     shapes = stall_shapes(cam)
     lot = cam["lot_id"]
-    model_path = HERE / "out" / "cameras" / f"{lot}.{model}.npz"
-    print(f"{cam['camera_id']} -> {lot} ({len(shapes)} stalls, model {model})")
-    if args.retrain or not model_path.exists() or model_path.stat().st_mtime < cam_path.stat().st_mtime:
-        train(cam, shapes, model_path, model)
+    extra = None
+    if args.with_labels:
+        given = json.loads(Path(args.with_labels).read_text(encoding="utf-8"))
+        extra = [dict(ph, day="drivers") for ph in given["photos"]]
+    model_path = HERE / "out" / "cameras" / f"{lot}.{model}{'.drivers' if extra else ''}.npz"
+    print(f"{cam['camera_id']} -> {lot} ({len(shapes)} stalls, model {model}"
+          + (f", + {sum(len(p['labels']) for p in extra)} confirmations from {given['source']})" if extra else ")"))
+    if args.retrain or extra or not model_path.exists() or model_path.stat().st_mtime < cam_path.stat().st_mtime:
+        train(cam, shapes, model_path, model, extra)
     m = np.load(model_path, allow_pickle=True)
     w, mu, sd, refs, caution = m["w"], m["mu"], m["sd"], list(m["refs"]), float(m["caution"])
     trusted = [bool(t) for t in m["trusted"]]
@@ -318,6 +327,11 @@ def main() -> None:
     # the replayed day: read, grade, gate, write the events drivers see
     readings = read(cam["replay"])
     g = grade(cam, shapes, readings, trusted)
+    if extra:
+        # confirmations are labels from the replayed day itself: grading the gate there would grade the answers
+        # the model was just shown, so the gate moves to the validation day (never trained on)
+        g = grade(cam, shapes, read(cam["validation"]), trusted)
+        print("  confirmations come from the replayed day, so the gate is graded on the validation day")
     # Two gates (D4). Per stall, from the tuning days (trusted, in training): only a stall whose "free" held up
     # there may be named. Per camera, on this unseen day: the spot guidance would name must be really free 19
     # times in 20. A stall that fails either still reports, as periodic_snapshot: counted in its row, never named.
@@ -335,13 +349,14 @@ def main() -> None:
                 feed.write(json.dumps(ev.to_json()) + "\n")
     untrusted = [stall for (stall, *_rest), ok in zip(shapes, trusted) if not ok]
     print(f"  {len(readings)} photos -> {feed_path.relative_to(HERE)}")
-    print(say("replayed day", g))
+    print(say("validation day (gate)" if extra else "replayed day", g))
     print(f"  stall gate (tuning days): {sum(trusted)} of {len(trusted)} trusted"
           + (f"; rows only: {', '.join(untrusted)}" if untrusted else ""))
     print("  camera gate (replayed day): " + ("passed, names those stalls (near_live)" if cadence == cam["cadence_class"]
           else f"failed (limit {100 * WRONG_FREE_LIMIT:.0f}%), rows and counts only (periodic_snapshot)"))
     (out_dir / f"{lot}.grade.json").write_text(json.dumps({
-        "camera_id": cam["camera_id"], "lot_id": lot, "model": model, **g, "trusted": sum(trusted),
+        "camera_id": cam["camera_id"], "lot_id": lot, "model": model, "gate_day": "validation" if extra else "replay",
+        "confirmations": given["source"] if extra else None, **g, "trusted": sum(trusted),
         "stalls": len(trusted), "untrusted": untrusted, "cadence": cadence, "caution": caution}, indent=1),
         encoding="utf-8")
 

@@ -29,6 +29,7 @@ sys.path.insert(0, str(HERE))
 from parkfind import guidance                      # noqa: E402
 from parkfind.lastseen import load_layout, status  # noqa: E402
 from parkfind.server import events_until           # noqa: E402  the server's own reading, not a copy
+from parkfind.forecast import LOOKBACK_MIN, lot_counts, project, trend   # noqa: E402
 
 NAMED_WRONG_LIMIT = 0.05   # D4: a named spot may be really taken at most 1 time in 20
 
@@ -61,10 +62,13 @@ def score(run: Path, every_min: int) -> dict:
                           "moments": 0, "stall_reads": 0, "known": 0, "right": 0, "said_free": 0, "free_wrong": 0,
                           "named": 0, "named_wrong": 0, "counts": 0, "count_off": 0, "by_hour": {}}
             for l in layout["lots"]}
+    counts_at, free_at = {}, {}   # per sample time: the served counts, and the truth (for the forecast grade)
     for tick in truth["ticks"][::step]:
         now = datetime.fromisoformat(tick["t"].replace("Z", "+00:00"))
         events, _ = events_until(run / "feed.jsonl", now)
         st = status(events, layout, now)
+        counts_at[now] = lot_counts(st)
+        free_at[now] = {lot_id: real["free"] for lot_id, real in tick["lots"].items()}
         for lot_id, real in tick["lots"].items():
             r = rows.get(lot_id)
             if r is None:
@@ -92,7 +96,38 @@ def score(run: Path, every_min: int) -> dict:
             if shown is not None:
                 r["counts"] += 1
                 r["count_off"] += abs(shown - real["free"])
+    rows["_forecast"] = grade_forecast(counts_at, free_at)
     return rows
+
+
+def grade_forecast(counts_at: dict, free_at: dict) -> dict:
+    """why: a forecast earns its place only if it beats "it stays as it is now"; grade both on the same moments.
+    boundary: the served counts at t, t-10, t-20 (forecast.py's model, unchanged) against the truth 5 and 10 minutes on.
+    ugly: "promised room, found full" is the error a driver feels: we said 2 or more free on arrival, and there were 0.
+    """
+    from datetime import timedelta
+    out = {}
+    for h in (5, 10):
+        g = {"n": 0, "trend_err": 0, "same_err": 0, "trend_full": 0, "same_full": 0}
+        for t, cur in counts_at.items():
+            later = free_at.get(t + timedelta(minutes=h))
+            past = [counts_at.get(t - timedelta(minutes=m)) for m in LOOKBACK_MIN]
+            if later is None or any(p is None for p in past):
+                continue
+            for lot_id, c in cur.items():
+                pts = [p.get(lot_id) for p in past] + [c]
+                if any(x is None for x in pts) or lot_id not in later:
+                    continue
+                f = {"free_now": c[0], "total": c[1],
+                     "per_min": trend([(-m, x[0]) for m, x in zip(LOOKBACK_MIN, pts[:-1])] + [(0, c[0])])}
+                guess, real = project(f, h), later[lot_id]
+                g["n"] += 1
+                g["trend_err"] += abs(guess - real)
+                g["same_err"] += abs(c[0] - real)
+                g["trend_full"] += guess >= 2 and real == 0
+                g["same_full"] += c[0] >= 2 and real == 0
+        out[h] = g
+    return out
 
 
 def worst_hour(by_hour: dict) -> str:
@@ -124,6 +159,7 @@ def main() -> None:
         return f"{100 * a / b:5.1f}%" if b else "    -"
 
     rows = score(run, args.every)
+    fc = rows.pop("_forecast")
     print(f"{'lot':24s} {'truth':22s} {'seen':>6s} {'right':>6s} {'free?':>6s} {'named':>6s} {'wrong':>6s} {'count±':>7s}  {'worst hr':>9s}")
     failed = []
     for lot_id, r in rows.items():
@@ -138,6 +174,13 @@ def main() -> None:
     print("\nseen = stall reads not unknown · right = of those, matched truth · free? = said free but taken\n"
           "named = single spots guidance named · wrong = of those, really taken · count± = pin number off by, on average\n"
           "worst hr = the campus hour whose named spots were most often taken (taken/named)")
+    print("\nForecast for arrival (all lots): trend line vs \"it stays as it is now\"")
+    for h, g in fc.items():
+        if g["n"]:
+            print(f"  {h:2d} min ahead: off by {g['trend_err'] / g['n']:.2f} spots on average vs {g['same_err'] / g['n']:.2f}; "
+                  f"promised room, found full: {g['trend_full']} vs {g['same_full']} times (of {g['n']})")
+        else:
+            print(f"  {h:2d} min ahead: not graded (use --every 5 or 10 so the past points line up)")
     if failed:
         print(f"\nFAIL: named spots taken more than {100 * NAMED_WRONG_LIMIT:.0f}% of the time in: {', '.join(failed)}")
         sys.exit(1)

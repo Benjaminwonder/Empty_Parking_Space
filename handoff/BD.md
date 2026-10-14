@@ -385,3 +385,120 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
           A-08; LBC "I've parked" recorded from the driver; Edmunds report sent and shown; way-only card; card
           placement at 1600 and 1366; footer on one row; no page errors. score_day PASS.
   next: BD-19 answers "Was that you?" from location (far away -> taken, auto-claim the next spot, Undo).
+
+2026-10-13 · BD-19: whose car was it? answered from location (DK file, by BD)
+  landed (WebPage): judgeCarSeen() on every poll: car_seen + you within ~60 m of the lot (+ GPS accuracy) -> POST
+          /parked (camera still decides); 120 m or more away -> card "Someone else parked in A-06. You're about
+          843 m away... Finding you another spot in 5 s" with Find another now / That was me; then POST /taken,
+          ask guidance for a stall in the same lot, else the nearest lot with a guaranteed spot, claimSpot it,
+          toast names the new spot, route redrawn. In between or no location: "Was that you?". Location never
+          leaves the page (CONTRACT line added).
+  fixed: standing at a lot made a trip with no road leg; the written steps looked up a road that does not exist and
+         threw, and claimSpot's catch called it a network problem. Steps now say "You're at <lot>: make your way
+         in"; the banner says the same; .catch only blames the network for real network errors (isNetworkError).
+  checked (4 drivers at once, 30x, recorded day): at Sage -> parked with no tap; 843 m away -> countdown -> A-06
+         released as taken -> A-08 held, route updated; far + "That was me" -> parked; 91 m away -> asked.
+         Steps/banner from 49 points x 9 lots: 0 errors, 0 "undefined". Slice-2 flow 24/24, routing unchanged.
+
+2026-10-13 · BD-20: held vs yours, footer by stage; permits and find-my-car built in, switched off (DK file, by BD)
+  explained: your own spot is solid blue on purpose ("yours"); purple is someone else's hold. The legend never said
+             so: it now has "Yours" and "Held by others".
+  fixed: the lot window offered Start route for your spot at every stage. Now: held -> Release + Start route;
+         car seen -> Yes, I parked / No, not me; parked -> I've left.
+  landed: FEATURES = { findMyCar: false, permits: false } (one switch; ?features=findMyCar,permits for a demo).
+          Permits: WebPage.java passes campus.json permits per lot; "Parking as" chip (Any / Commuter / Resident /
+          Faculty-staff / Visitor, remembered); lots you can't use fade (pins, list, last in the list), are skipped
+          by suggestions and the automatic next-spot claim, can't be claimed, and say whose lot they are.
+          server.py (DI file, by BD): /claim&permit=... -> 409 wrong_permit. Later a gate camera sets the permit.
+          Find my car: parked -> Find my car -> the route from you to your spot (card "Finding your car", Found it).
+          The driver id now lives in the browser, so a reload keeps your claim (needed to find your car later).
+  checked: features off: no chip, no fades, no button, legend + "yours" colour, parked footer, reload keeps claim.
+           on: visitor fades Flagler/LBC/Sage/Michigan Ave/Dog Park, suggestion moves to Facilities, page and server
+           refuse Sage (409 wrong_permit), Hollis allowed (200); Find my car survives polls, Found it ends it. 21/21.
+  known: find-my-car directions use driving words ("Head west on ..."); walking words when the feature goes live.
+
+2026-10-13 · BD-21: the demo drive (DK file + DI file, by BD; parkfind/demo.py new, BD)
+  landed: parkfind/demo.py DemoBook: POST /demo/park puts the driver's demo car on their claimed stall as a camera
+          reading (source demo.car, the camera's cadence and ttl) stamped at every read (to the millisecond: a
+          sensor reporting on the whole second would tie, and ties go to the older) while the claim lasts; refused
+          on slow stalls ("slow": the driver taps I've parked) and where a car got there first ("occupied").
+          server.py: --demo (run.py passes it), SK-VIEW "demo": {speed}, demo cars read with the feed and reports.
+          claims.py: holder(), mine(). WebPage: "Drive there (demo)" on a held spot; the dot drives tripTo() at
+          20 km/h x replay speed, map, mini map and banner follow, real location waits (kept for after);
+          at the lot -> /demo/park -> the camera sees the car -> location says it is you -> confirmed -> parked.
+  fixed on the way: the nearest-lot window popped open when the demo dot appeared (first "location");
+          whose-car was re-judged on later polls, so a car seen while you were 85 m away became "yours" once you
+          drove up: now decided once, from where you were when it appeared; a re-claim in flight looked like
+          "no claim" and ended the demo (demoHandoff); a next spot in the same lot is a zero-length drive.
+  checked (browser): camera lot: drive -> parked, survives polls, I've left -> demo car gone; slow lot -> tap
+          I've parked; recorded car takes Sage A-05 mid-drive -> released as taken -> A-06 held -> drives on ->
+          parked, never two cars in A-05. Regression: four drivers, slice-2 flow 24/24, features 21/21, routing,
+          step sweep 441/441, claims 12/12 + 15/15, score_day PASS.
+
+2026-10-13 · BD-22: hold sized by the drive (TeamVote V-6, built, awaiting DI/DK)
+  landed: claims.py hold_window(hold_min): whole minutes from the page, clamped 4-15; none -> 8 (old rule); slower
+          sensors still add 5/15. server.py: /claim&hold_min=. WebPage: holdMinutes() = route metres at 20 km/h x1.3
+          + 3 min, sent with every claim (also the automatic re-claim); card says "Held N min, sized to your drive";
+          the demo car drives at the same CAMPUS_KMH. CONTRACT: hold_min is the only trace of position sent.
+  checked: clamps and default (5/5); at Sage 58 m -> 4 min, gate -> Sage 509 m -> 5 min, gate -> Facilities 1084 m
+           -> 8 min; claim requests carry only stall_id, driver_id, vehicle_class, hold_min. Regression: four
+           drivers 11/11 (test re-cast: a driver 90 m away now gets 4 min, so the old stall's car came too late,
+           correctly released), demo 3 scenarios, flow 24/24, features 21/21, claims 12/12 + 15/15.
+  → DI, DK: please vote on V-6 in TeamVote.md.
+
+2026-10-13 · BD-23: one extension on the way (V-7); arrival margin (V-8); forecast graded honestly
+  landed: claims.py extend() (once, held, before the deadline, +2..5) + POST /extend. WebPage maybeExtend(): road
+          metres at claim (or at demo-drive start) vs now; 50 m closer and not at the lot, within the last ~90 s
+          (wider at fast replay speeds) -> /extend; toast + "Extended once because you're on your way."
+          parkfind/forecast.py (new, BD): per-lot counts now, -10, -20 min (minute cache), trend + DRIFT_PER_MIN;
+          SK-VIEW "forecast". WebPage arrival(): ETA from the route; "may be gone" when free <= ceil(drift x ETA);
+          lotSuggestions prefers lots with margin; location card and lot window say it. score_day grades the
+          forecast (trend vs "stays") at 5 and 10 minutes.
+  finding: the trend line lost to "stays as it is now" on validation days (sim seeds 11, 13, 17): average error
+          15-25% worse at 5 and 10 min; half-strength and falling-only only tied. Model chosen by a rule fixed
+          before looking at those days: "stays" + drift margin. Honest note: the replayed day's grade was looked at
+          before the rule was set; its verdict agrees. The simulated lots never fill; full lots come from photos.
+  checked: extend rules 4/4; E1 moved 1073 -> 539 m -> +4 min once; E2 still -> no extension; margin moves the
+           suggestion; view ~12 ms; regression: four drivers 11/11, demo 3 scenarios, hold 6/6, flow 24/24,
+           features 21/21, routing, sweep 441/441, claims 12/12 + 15/15.
+  → DI, DK: votes on V-6, V-7, V-8 in TeamVote.md.
+
+2026-10-13 · BD-24: drivers' confirmations as camera labels (pipeline built; one day is too little to help)
+  landed: parkfind/confirmations.py (new) LabelLog: confirmations from real camera readings only (never demo.car,
+          simulator or driver reports) -> out/<run>/labels.jsonl. claims.py logs "I've parked" + camera
+          (driver_and_camera) and disputed not-seen; server.py logs "No, not me" (someone_else) and "I've left"
+          after a confirmed arrival (driver_left, joined to the first photo within 10 min). labels.py (new):
+          collect (log -> out/labels/<lot>.json, graded vs the people's labels) and simulate --p (synthetic drivers at
+          real arrivals/departures). vision.py --with-labels: learns from partial labels (only the confirmed stall
+          per photo), model saved as <lot>.<model>.drivers.npz, and grades the gate on the validation day because
+          the labels come from the replayed day.
+  result (validation day, never trained on): west1 98.2% -> 98.2% right at p=0.3 (42 labels), 98.3% at p=1.0
+          (116 labels: every arrival and departure that day); sage 99.1% -> 99.1%. A day of confirmations is a
+          trickle next to ~7,700 training views. Proposed instead for now: V-9, confirmations as a camera health check.
+  checked: only camera readings logged (demo.car/simulator refused); confirmed arrival logged on the photo that saw
+           the car; collect joins to photos; regression: four drivers 11/11, demo x3, extension 5/5, flow 24/24,
+           features 21/21, hold 6/6, claims 12/12 + 15/15.
+
+2026-10-13 · BD-25: phone-ready; camera health check (V-9 built)
+  landed (WebPage): the page asks its own address (/api/...); ApiProxy passes GET/POST to the data server
+          (PARKFIND_API, default localhost:8765), 502 + JSON when it is down; thread pools so the proxy never queues
+          pages. HTTPS on 8443 when PARKFIND_HTTPS names a PKCS12 keystore. Phone layout (<= 900 px): trip card
+          above the map, close-up under it, 44 px buttons, full-screen lot window, chips scroll, 16 px search (no
+          iPhone zoom), no sideways scroll; screen wake lock while a route runs. Footer for your own held spot now
+          says "Held for you until ..." (was "Not seen free right now").
+          run.py --phone: Wi-Fi address (UDP connect, nothing sent), keytool certificate for it (+127.0.0.1,
+          localhost) in out/phone/, remade when the address changes; prints the phone address and the two
+          one-time steps (accept the warning, allow Java on private networks).
+  landed (V-9): confirmations.py health per camera (last 50; agree: driver_and_camera, someone_else; disagree:
+          driver_found_car, disputed_not_seen; flag at >= 10, >= 2 against, rate >= max(10%, 2 x graded error));
+          rebuilt from the log on restart. server.py: SK-VIEW camera_health, /taken?reason=found_car, graded levels
+          from out/vision/*.grade.json. WebPage: "There's a car in it" on a held spot (labels the camera wrong,
+          re-claims, never the same spot); warnings in the lot list and window; run.py board marks "(camera?)".
+  checked: proxy GET/POST, HTTPS page + api, certificate names, 502 when down; iPhone 13 over HTTPS on a non-
+           localhost address: secure context, live data, location on, layout 10/10; health rules 7/7 (one
+           contradiction never flags); seeded log -> Sage flagged 3 of 12, warnings shown; "There's a car in it"
+           -> thanked, B-03 held (was re-claiming B-02: fixed). Regression: four drivers 11/11, demo x3, extension
+           5/5, flow 24/24, features 21/21, hold 6/6, routing, sweep, claims 12/12 + 15/15.
+  open: V-9 entry in TeamVote.md still says "proposed (not built)"; not edited (TeamVote changes need BD's OK).
+  TeamVote (with BD's OK, 2026-10-13): V-6..V-9 kept, V-9 marked built; V-10 added (flagged camera stops naming spots,
+  only when 3+ different drivers contradicted it; proposed, not built).
