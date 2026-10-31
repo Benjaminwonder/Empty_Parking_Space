@@ -10,9 +10,19 @@ and says how old the information is.
    socket is a request in your handoff file, not an edit.
 
 ## Lanes
-BD   run.py · sim.py · vision.py · labels.py · pklot_cameras.py · cameras/ · campus.json · cameras/ · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py · parkfind/claims.py · parkfind/reports.py · parkfind/demo.py · parkfind/forecast.py · parkfind/confirmations.py
+BD   run.py · sim.py · vision.py · labels.py · pklot_cameras.py · cameras/ · campus.json · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py · parkfind/claims.py · parkfind/reports.py · parkfind/demo.py · parkfind/forecast.py · parkfind/confirmations.py · Useful.docx
 DI   parkfind/lastseen.py · parkfind/server.py · tests/
 DK   WebPage.java
+
+Logic vs wiring (agreed 2026-10-19): BD writes the logic (a function in a BD module that decides,
+e.g. claims.py says "taken"). DI writes the HTTP endpoint in server.py that calls it, and the test
+in tests/ that proves the rule. DK shows the result. Nobody edits another lane's file to save a day:
+a needed change is a request in your handoff file.
+
+## Progress (agreed 2026-10-31)
+- handoff/STATUS.md: one line per lane (stage, last milestone done, now). Read it before any work; say first if a
+  lane is 2+ milestones behind. Each lane writes only its own line.
+- progress/ (git-ignored): your own working notes and your copy of your milestone doc.
 
 ## Rules that do not bend
 - Every code file's first lines carry its tag:  # box: T2 · lane: DI · read BRIDGES.md before editing

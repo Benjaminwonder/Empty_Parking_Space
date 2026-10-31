@@ -29,7 +29,7 @@ Why: nobody should need three terminals to see the product.
 BD: yes
 Dk: yes
 
-### V-6 · Hold sized by the drive, not a flat 8 minutes · BD · built 2026-10-13, awaiting DI and DK
+### V-6 · Hold sized by the drive, not a flat 8 minutes · BD · **carried 2026-10-31 → BD-22** (built 2026-10-13)
 What: the page asks the server to hold a spot about as long as the drive takes (route length at 20 km/h, x1.3, +3 min),
 whole minutes only, clamped to 4-15 min; slower sensors still add their interval. No ask = the old 8 minutes.
 Why: a flat 8 minutes lets someone next door hoard a spot and makes someone across campus lose theirs on the way.
@@ -37,7 +37,7 @@ Undo if dropped: the page stops sending hold_min (one line in claimSpot); the se
 BD: yes
 DK: yes
 
-### V-7 · One extension for a driver visibly on the way · BD · built 2026-10-13, awaiting DI and DK
+### V-7 · One extension for a driver visibly on the way · BD · **carried 2026-10-31 → BD-23** (built 2026-10-13)
 What: near the end of a hold, if the page sees the driver is at least 50 m closer by road than when they claimed (and not
 yet at the lot), it asks once for 2-5 more minutes; the server allows one per claim, before the deadline.
 Why: someone stuck behind a bus should not lose the spot they are clearly driving to.
@@ -45,7 +45,7 @@ Undo if dropped: remove maybeExtend() from the poll; /extend stays unused.
 BD: yes
 DK: yes
 
-### V-8 · Suggest the lot that will still have room on arrival · BD · built 2026-10-13, awaiting DI and DK
+### V-8 · Suggest the lot that will still have room on arrival · BD · **carried 2026-10-31 → BD-23** (built 2026-10-13)
 What: a lot with fewer free spots than it typically loses during your drive (~1 per 10 min, measured on validation days)
 is marked "may be gone", and suggestions prefer a lot with margin. A trend-line forecast was tested and lost to
 "stays as it is now" on every validation day, so it is graded in score_day but not used.
@@ -53,7 +53,7 @@ Why: "filling up" now can mean full when you get there.
 BD: yes
 DK: yes
 
-### V-9 · Drivers' confirmations as a live camera health check · BD · built 2026-10-13, awaiting DI and DK
+### V-9 · Drivers' confirmations as a live camera health check · BD · **carried 2026-10-31 → BD-25** (built 2026-10-13)
 What: per camera, keep a running rate of "the driver found a car where the camera said free" (and the reverse) from
 confirmations; flag a camera on the page and in run.py when that rate rises above its graded level.
 Why: one day of confirmations is far too few to retrain on (BD-24), but enough to notice a camera drifting
@@ -64,7 +64,7 @@ Undo if dropped: the page stops showing camera_health; the server keeps counting
 BD: yes
 DK: yes
 
-### V-10 · A flagged camera stops naming single spots · BD · proposed 2026-10-13 (not built)
+### V-10 · A flagged camera stops naming single spots · BD · **carried 2026-10-31 → BD-V10 (not built yet)**
 What: while a camera is flagged by the health check (V-9), its lot answers with rows and counts only, like a camera that
 failed its quality gate; it names single spots again once drivers stop contradicting it. Only counts as flagged when the
 contradictions come from at least 3 different drivers.

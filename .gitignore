@@ -4,3 +4,5 @@ __pycache__/
 librarian.py
 data/
 
+vision_bench.py
+progress/

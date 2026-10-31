@@ -1,0 +1,18 @@
+# STATUS: where each lane is
+
+One line per lane. Each lane edits only its own line (one writer per line), so git never conflicts.
+Milestone IDs only; the plan itself stays with BD.
+
+Format:  LANE: stage <S#> · done <k>/<M> · last done <milestone id> · now <milestone id or idle> · <date>
+
+BD: stage S0 · done 0/- · last done - · now - · 2026-10-31
+DI: stage S0 · done 0/- · last done - · now - · 2026-10-31
+DK: stage S0 · done 0/- · last done - · now - · 2026-10-31
+
+## Rule for anyone (person or LLM) before working
+1. git pull, then read this file.
+2. "Behind" = a lane has 2 or more milestones still open in the current stage than the lane with the fewest
+   open (open = M - k). Say that first, in one line: "DK is 2 milestones behind (S1-DK-2)".
+3. No lane starts stage N+1 until stage N's join check has passed for all three.
+4. When you start a milestone, set "now"; when you finish, set "last done" and the date, and commit with the
+   milestone ID first in the message (e.g. "S1-DI-3: site directory endpoint").
