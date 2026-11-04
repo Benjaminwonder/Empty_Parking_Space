@@ -517,3 +517,25 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
          per hour, or a --test flag that logs nothing) needs BD's OK first.
   note: utc_offset -04:00 is right for the replayed day (21 Sep). It only matters once live data runs past 1 Nov.
 
+2026-11-02 · S0-BD-2: sim.py can no longer overwrite run.py's day
+  why: a hand "python sim.py" wrote out/latest; its feed looked newer than every source, so run.py's newer()
+       check skipped the merge and served a day with no camera lots, silently.
+  changed: sim.py --out default out/latest -> out/try (a folder nobody else writes; run.py passes --out itself).
+           README: hand run writes out/try, score_day --run out/try, by-hand server --run out/try, and says that
+           day is simulated everywhere; end-of-run numbers updated (163 arrivals, 30 departures, 14223 events:
+           they had drifted since the README was written). Useful.docx section 6: same.
+  checked: python sim.py -> out/try/feed.jsonl; out/latest/* and out/sim/* modification times unchanged;
+           score_day --run out/try PASS; run.py still prints "Camera lots (real photos, PKLot)".
+  open: run.py reruns the simulator only when the camera lots change, not when campus.json or sim.py change
+        (stale simulated day until --fresh). Separate step, BD's call.
+
+2026-11-02 · S0-BD-3: three new socket shapes drafted (CONTRACT, marked "draft, stage S0")
+  SK-SITE: a site's public card (site_id, name, centre, outline, status coming_soon|counts|named, access, utc_zone);
+           never camera data, stall states or permit data. Stetson public until permits exist (S5).
+  SK-CONNECTOR: what any connector delivers: SK-EVENT with site_id, change + debounce, a heartbeat every 60 s with
+           ttl 90 s, a health line every 60 s (feeds camera_feed). No frames, no images ever cross.
+  SK-PERMIT: upload permit,class; stored as a keyed hash (HMAC-SHA256, key apart from data) + class; unlock gives a
+           signed token with class and expiry; the phone keeps the token, never the number.
+  also: SK-CLAIM row had unescaped "regular|ada|ev" that split the table; escaped.
+  waiting: DI and DK read the three rows and agree or ask in handoff/DI.md / handoff/DK.md.
+

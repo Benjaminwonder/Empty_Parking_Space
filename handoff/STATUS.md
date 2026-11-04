@@ -5,7 +5,7 @@ Milestone IDs only; the plan itself stays with BD.
 
 Format:  LANE: stage <S#> · done <k>/<M> · last done <milestone id> · now <milestone id or idle> · <date>
 
-BD: stage S0 · done 0/- · last done - · now - · 2026-10-31
+BD: stage S0 · done 2/3 · last done S0-BD-2 · now S0-BD-3 (waiting: DI and DK read the drafts) · 2026-11-02
 DI: stage S0 · done 0/- · last done - · now - · 2026-10-31
 DK: stage S0 · done 0/- · last done - · now - · 2026-10-31
 

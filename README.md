@@ -62,17 +62,22 @@ python sim.py
 On Windows, if `python` is not found, use `py`.
 
 You should see one line every 30 simulated minutes, 06:30 to 09:30 lot time, showing how full
-each of the nine lots is, ending with `lots=9  stalls=200  arrivals=166  departures=21  events=14187`.
+each of the nine lots is, ending with `lots=9  stalls=200  arrivals=163  departures=30  events=14223`.
 The run writes:
 
-- `out/latest/feed.jsonl`: the sensor reports, one per line (what ParkFind reads)
-- `out/latest/truth.json`: what was really true each tick (tests only)
+- `out/try/feed.jsonl`: the sensor reports, one per line (what ParkFind reads)
+- `out/try/truth.json`: what was really true each tick (tests only)
+
+A hand run always writes `out/try` (or the folder you give with `--out`), never `out/latest`:
+that folder belongs to `run.py`, which skips rebuilding anything that looks newer than its inputs.
 
 To check a played day against the truth (photo lots use the people's labels on each photo):
 
 ```
-python tests/score_day.py
+python tests/score_day.py --run out/try
 ```
+
+Without `--run` it checks `out/latest`, the day `run.py` built (below).
 
 It prints one row per lot and exits 1 if any lot named a spot that was really taken more than 5% of the time.
 
@@ -110,11 +115,12 @@ and shows a live board in the terminal (campus time and free spots per lot). Whe
 ends it starts again from the morning. Ctrl+C stops everything. Options: `--fresh` (new day of data),
 `--speed 60` (faster), `--no-browser`, `--quiet`. The servers' own output goes to `out/logs/`.
 
-The same thing by hand, in three terminals, all in the repo folder:
+Nearly the same thing by hand, in three terminals, all in the repo folder. This day is simulated
+everywhere: the camera lots (real photos) only come from `run.py`.
 
 ```
 python sim.py --minutes 900
-python -m parkfind.server --run out/latest --speed 10
+python -m parkfind.server --run out/try --speed 10
 java --source 17 WebPage
 ```
 

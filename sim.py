@@ -581,7 +581,9 @@ def main() -> None:
     p.add_argument("--campus", default=str(DEFAULT_CAMPUS))
     p.add_argument("--cadence", default=None,
                    help="override every lot's sensors, comma list: continuous,periodic_5min,periodic_15min,hourly,event_only")
-    p.add_argument("--out", default="out/latest", help="run folder for feed.jsonl and truth.json (default out/latest)")
+    # out/try belongs to nobody: run.py owns out/sim and out/latest and passes --out itself, so a hand run
+    # can never overwrite the folder the server is replaying (its cache would trust the newer file).
+    p.add_argument("--out", default="out/try", help="run folder for feed.jsonl and truth.json (default out/try)")
     p.add_argument("--minutes", type=int, default=180, help="simulated minutes from --start")
     p.add_argument("--tick", type=int, default=30, help="world tick seconds")
     p.add_argument("--start", default="2026-09-21T06:30:00", help="lot-local time, e.g. 2026-09-21T06:30:00")
