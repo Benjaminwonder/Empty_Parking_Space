@@ -21,7 +21,7 @@ from pathlib import Path
 from datetime import datetime
 
 from parkfind.event import OccupancyEvent, EventShapeError
-from parkfind.clock import make_clock, parse_utc
+from parkfind.clock import make_clock
 
 # The one layout file the trunk reads, found next to the package, not the current directory.
 LAYOUT_PATH = Path(__file__).resolve().parent.parent / "campus.json"
