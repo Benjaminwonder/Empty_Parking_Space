@@ -23,6 +23,9 @@ from parkfind.demo import DemoBook
 from parkfind.forecast import Forecaster, lot_counts
 from parkfind.confirmations import LabelLog
 from parkfind.lastseen import load_layout, read_feed, status
+from parkfind import sites_standin
+
+SITES_DIR = Path(__file__).resolve().parent.parent / "sites"
 
 
 _FEED_CACHE = {"key": None, "times": [], "events": [], "rejected": 0}
@@ -220,10 +223,22 @@ def make_handler(run, layout, clock, book, reports=None, demo=None, forecaster=N
         def do_GET(self):
             """
             why: Serve a fresh parking snapshot when the frontend requests it.
-            boundary: Only /view returns SK-VIEW; other paths return 404.
+            boundary: /view returns SK-VIEW and /sites the site directory (stand-in); other paths return 404.
             ugly: Browser clients require CORS headers from their own origin.
             """
             request = urlsplit(self.path)
+
+            if request.path == "/sites":   # stand-in directory for the demo; DI's S1-DI-2 replaces it
+                self._send_json(200, sites_standin.load_cards(SITES_DIR))
+                return
+
+            if request.path.startswith("/sites/") and request.path.endswith("/package"):
+                package = sites_standin.load_package(SITES_DIR, request.path[len("/sites/"):-len("/package")])
+                if package is None:
+                    self.send_error(404, "No such live site")
+                    return
+                self._send_json(200, package)
+                return
 
             if request.path != "/view":
                 self.send_error(404, "Not found")

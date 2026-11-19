@@ -1,0 +1,475 @@
+{
+  "card": {
+    "site_id": "stetson",
+    "name": "Stetson University",
+    "centre": {
+      "lat": 29.036468,
+      "lng": -81.300411
+    },
+    "outline": [
+      [
+        29.04316,
+        -81.307769
+      ],
+      [
+        29.043197,
+        -81.2935
+      ],
+      [
+        29.029776,
+        -81.293052
+      ],
+      [
+        29.029739,
+        -81.307322
+      ]
+    ],
+    "status": "named",
+    "access": "public",
+    "utc_zone": "America/New_York"
+  },
+  "layout": {
+    "about": "L0: the one campus layout. sim.py, last-seen, guidance and the page all read this file; nobody copies it into code. Each row is a zone; row A is nearest the lot entrance. Stall ids are lot:row-NN (sage:B-04). special_stalls list ids inside the lot (B-04). sensors name what each lot can see; demand scales how busy the lot is. official_lot and permits are the real Stetson lot each entry stands for (campus map, Aug 2026); lot_id stays our internal key so feeds and runs keep working.",
+    "campus_id": "stetson",
+    "utc_offset": "-04:00",
+    "lots": [
+      {
+        "lot_id": "rinker",
+        "name": "Edmunds Center · Lot 03",
+        "official_lot": "03",
+        "permits": [
+          "open_permit"
+        ],
+        "rows": [
+          "A",
+          "B",
+          "C"
+        ],
+        "stalls_per_row": 8,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": []
+        },
+        "sensors": [
+          "hourly"
+        ],
+        "demand": 0.8,
+        "outline": [
+          [
+            29.039734,
+            -81.303392
+          ],
+          [
+            29.039735,
+            -81.302855
+          ],
+          [
+            29.039242,
+            -81.302838
+          ],
+          [
+            29.03924,
+            -81.303376
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.039488,
+          "lng": -81.303115
+        }
+      },
+      {
+        "lot_id": "sage",
+        "name": "Sage · Lot 33",
+        "official_lot": "33",
+        "permits": [
+          "commuter",
+          "resident"
+        ],
+        "rows": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "stalls_per_row": 8,
+        "special_stalls": {
+          "ada": [
+            "A-01",
+            "A-02"
+          ],
+          "ev": []
+        },
+        "sensors": [
+          "continuous"
+        ],
+        "demand": 1.3,
+        "outline": [
+          [
+            29.03456,
+            -81.300458
+          ],
+          [
+            29.034562,
+            -81.299569
+          ],
+          [
+            29.034299,
+            -81.29956
+          ],
+          [
+            29.034297,
+            -81.300449
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.034429,
+          "lng": -81.300009
+        }
+      },
+      {
+        "lot_id": "libn",
+        "name": "Flagler · Lot 25",
+        "official_lot": "25",
+        "permits": [
+          "commuter",
+          "faculty_staff"
+        ],
+        "rows": [
+          "A",
+          "B"
+        ],
+        "stalls_per_row": 10,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": [
+            "A-02",
+            "A-03"
+          ]
+        },
+        "sensors": [
+          "continuous"
+        ],
+        "demand": 1.2,
+        "outline": [
+          [
+            29.034811,
+            -81.305378
+          ],
+          [
+            29.034813,
+            -81.304303
+          ],
+          [
+            29.034517,
+            -81.304293
+          ],
+          [
+            29.034514,
+            -81.305368
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.034664,
+          "lng": -81.304836
+        }
+      },
+      {
+        "lot_id": "libs",
+        "name": "LBC · Lot 41",
+        "official_lot": "41",
+        "permits": [
+          "commuter",
+          "faculty_staff"
+        ],
+        "rows": [
+          "A",
+          "B"
+        ],
+        "stalls_per_row": 7,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": []
+        },
+        "sensors": [
+          "periodic_15min"
+        ],
+        "demand": 1.4,
+        "outline": [
+          [
+            29.03342,
+            -81.302589
+          ],
+          [
+            29.033422,
+            -81.301551
+          ],
+          [
+            29.032797,
+            -81.30153
+          ],
+          [
+            29.032795,
+            -81.302568
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.033108,
+          "lng": -81.302059
+        }
+      },
+      {
+        "lot_id": "hollis",
+        "name": "Hollis Center · Lot 08",
+        "official_lot": "08",
+        "permits": [
+          "faculty_staff",
+          "visitor",
+          "resident"
+        ],
+        "rows": [
+          "A",
+          "B"
+        ],
+        "stalls_per_row": 8,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": [
+            "A-02",
+            "A-03"
+          ]
+        },
+        "sensors": [
+          "periodic_5min"
+        ],
+        "demand": 1.0,
+        "outline": [
+          [
+            29.038998,
+            -81.301681
+          ],
+          [
+            29.038999,
+            -81.301218
+          ],
+          [
+            29.037881,
+            -81.301181
+          ],
+          [
+            29.03788,
+            -81.301644
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.038439,
+          "lng": -81.301431
+        }
+      },
+      {
+        "lot_id": "east",
+        "name": "Soccer Fields · Lot 24",
+        "official_lot": "24",
+        "permits": [
+          "faculty_staff",
+          "visitor"
+        ],
+        "rows": [
+          "A",
+          "B",
+          "C",
+          "D"
+        ],
+        "stalls_per_row": 7,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": []
+        },
+        "sensors": [
+          "event_only"
+        ],
+        "demand": 0.9,
+        "outline": [
+          [
+            29.036776,
+            -81.295917
+          ],
+          [
+            29.036777,
+            -81.295509
+          ],
+          [
+            29.035692,
+            -81.295473
+          ],
+          [
+            29.03569,
+            -81.295881
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.036234,
+          "lng": -81.295695
+        }
+      },
+      {
+        "lot_id": "west1",
+        "name": "Michigan Ave · Lot 42",
+        "official_lot": "42",
+        "permits": [
+          "commuter"
+        ],
+        "rows": [
+          "A",
+          "B",
+          "C"
+        ],
+        "stalls_per_row": 8,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": []
+        },
+        "sensors": [
+          "periodic_15min"
+        ],
+        "demand": 1.0,
+        "outline": [
+          [
+            29.033422,
+            -81.301477
+          ],
+          [
+            29.033424,
+            -81.300884
+          ],
+          [
+            29.032766,
+            -81.300862
+          ],
+          [
+            29.032765,
+            -81.301455
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.033094,
+          "lng": -81.30117
+        }
+      },
+      {
+        "lot_id": "west2",
+        "name": "Dog Park · Lot 54",
+        "official_lot": "54",
+        "permits": [
+          "commuter"
+        ],
+        "rows": [
+          "A",
+          "B"
+        ],
+        "stalls_per_row": 11,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": []
+        },
+        "sensors": [
+          "hourly"
+        ],
+        "demand": 0.7,
+        "outline": [
+          [
+            29.033428,
+            -81.29929
+          ],
+          [
+            29.033429,
+            -81.298864
+          ],
+          [
+            29.033133,
+            -81.298854
+          ],
+          [
+            29.033132,
+            -81.29928
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.03328,
+          "lng": -81.299072
+        }
+      },
+      {
+        "lot_id": "stetson",
+        "name": "Facilities · Lot 40",
+        "official_lot": "40",
+        "permits": [
+          "faculty_staff",
+          "visitor"
+        ],
+        "rows": [
+          "A",
+          "B"
+        ],
+        "stalls_per_row": 10,
+        "special_stalls": {
+          "ada": [
+            "A-01"
+          ],
+          "ev": [
+            "A-02",
+            "A-03"
+          ]
+        },
+        "sensors": [
+          "continuous"
+        ],
+        "demand": 1.1,
+        "outline": [
+          [
+            29.035413,
+            -81.295019
+          ],
+          [
+            29.035414,
+            -81.294649
+          ],
+          [
+            29.033901,
+            -81.294598
+          ],
+          [
+            29.0339,
+            -81.294969
+          ]
+        ],
+        "outline_source": "pin box from WebPage (approximate, to be traced)",
+        "centre": {
+          "lat": 29.034657,
+          "lng": -81.294809
+        }
+      }
+    ]
+  }
+}

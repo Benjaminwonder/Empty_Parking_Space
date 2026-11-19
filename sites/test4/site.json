@@ -1,0 +1,32 @@
+{
+  "card": {
+    "site_id": "test4",
+    "name": "Test Site 4 \u00b7 Daytona Beach",
+    "centre": {
+      "lat": 29.2108,
+      "lng": -81.0228
+    },
+    "outline": [
+      [
+        29.212,
+        -81.024
+      ],
+      [
+        29.212,
+        -81.0216
+      ],
+      [
+        29.2096,
+        -81.0216
+      ],
+      [
+        29.2096,
+        -81.024
+      ]
+    ],
+    "status": "coming_soon",
+    "access": "public",
+    "utc_zone": "America/New_York"
+  },
+  "layout": null
+}

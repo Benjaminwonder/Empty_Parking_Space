@@ -11,3 +11,9 @@ Updated the Java webpage to use the shared parking layout file instead of mainta
 
 10-12-26 DK3
 Set up and ran the Python backend using server.py and the parkfind package, organizing clock.py, lastseen.py, and event.py so the required imports work correctly. Created a test feed at runs/feed.jsonl and confirmed that the SK-VIEW endpoint at http://localhost:8765/view returns valid parking-status JSON with HTTP 200 responses. Connected the Java webpage to SK-VIEW using the endpoint URL in WebPage.java and implemented JavaScript fetch() requests with an approximately five-second refresh interval. Tested the parking-status display and confirmed that N1-01 and N1-02 display their expected taken/free states during testing, while all other stalls remain unknown when no valid status reports are available. Changed the test feed for N1-01 to occupied and observed that the webpage displayed it as taken, providing evidence that the updated status was reflected on the page. The basic backend connection and status-display test are working. Still need to complete verification that the status change occurs automatically without manually refreshing the webpage, and confirm that timestamps, claim ages, and zone-level counts consistently come from the backend but from the crude testing i've done so far,it seems like it consistently but more needs to be done.→ Complete the remaining SK-VIEW integration checks before proceeding to DK-4.
+
+2026-11-09 · from BD (demo, while DK was away): the front door in WebPage
+  New: Leaflet head tags, the #disc overlay (HTML + CSS + the "front door" script block before the boot
+  lines), an "All sites" button in the top bar, one line in onFix (discoveryFix), a discOpen gate in
+  maybeOpenNearest, and a re-render in onGeoError. Nothing else in the page changed. Please review it as
+  your own S1-DK-2/3/4 and change anything you would have done differently.

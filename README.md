@@ -130,6 +130,12 @@ page asks for fresh status every five seconds.
 To freeze the morning at one moment instead, start the server with
 `--now 2026-09-21T08:15:00-04:00 --speed 0`.
 
+The page opens on the front door: every ParkFind site (from `sites/*/site.json`), nearest first,
+on an open map (Leaflet + OpenStreetMap; the tiles need internet). Your location stays in the page:
+distances and "am I inside this site?" are worked out there and never sent. Inside Stetson it
+recommends Stetson; the test sites show as "coming soon" and can't be opened yet; search finds sites
+further than 5 km. Tap Stetson to open its campus view below, and **All sites** to go back.
+
 Click a P pin to open that lot: it leads with the best spot for your car and how old that
 sighting is; stalls show free, taken, held or unknown, and lots that only count cars (an hourly
 count, a gate) show their counts row by row with their age. Press **Claim this spot** and nobody

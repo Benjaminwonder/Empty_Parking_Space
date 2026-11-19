@@ -1,0 +1,32 @@
+{
+  "card": {
+    "site_id": "test3",
+    "name": "Test Site 3 \u00b7 South DeLand",
+    "centre": {
+      "lat": 29.0089,
+      "lng": -81.2975
+    },
+    "outline": [
+      [
+        29.0101,
+        -81.2987
+      ],
+      [
+        29.0101,
+        -81.2963
+      ],
+      [
+        29.0077,
+        -81.2963
+      ],
+      [
+        29.0077,
+        -81.2987
+      ]
+    ],
+    "status": "coming_soon",
+    "access": "public",
+    "utc_zone": "America/New_York"
+  },
+  "layout": null
+}

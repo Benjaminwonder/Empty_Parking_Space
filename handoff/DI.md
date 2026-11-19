@@ -22,3 +22,8 @@ landed: parkfind/server.py — GET /view returns as_of, freshness-aware status, 
 verified: quick and slow feeds both return 120 stalls; CORS allows http://localhost:8085; no simulator truth is exposed.
 → BD: answer is currently null; integrate guidance.answer() when BD-8 lands.
 → DK: frontend can now request http://localhost:8765/view?vehicle_class=regular&driver_id=test1.
+
+2026-11-09 · from BD (demo): stand-in directory
+  parkfind/sites_standin.py + two routes in server.py (GET /sites, GET /sites/<id>/package) serve
+  sites/*/site.json for the demo. They are yours to replace with S1-DI-1/S1-DI-2; keep the shapes in CONTRACT
+  (SK-SITE) so the page keeps working.

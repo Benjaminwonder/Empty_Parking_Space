@@ -6,3 +6,15 @@ data/
 
 vision_bench.py
 progress/
+
+# vision research (local only): environments, cloned repos, downloaded weights and datasets
+.venv*/
+parking-space-occupancy/
+parking-research/
+sam2/
+models/
+*.pt
+*.pth
+*.onnx
+*.zip
+Claude outputs/

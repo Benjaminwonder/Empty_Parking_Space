@@ -1,0 +1,32 @@
+{
+  "card": {
+    "site_id": "test2",
+    "name": "Test Site 2 \u00b7 Downtown DeLand",
+    "centre": {
+      "lat": 29.0283,
+      "lng": -81.3031
+    },
+    "outline": [
+      [
+        29.0295,
+        -81.3043
+      ],
+      [
+        29.0295,
+        -81.3019
+      ],
+      [
+        29.0271,
+        -81.3019
+      ],
+      [
+        29.0271,
+        -81.3043
+      ]
+    ],
+    "status": "coming_soon",
+    "access": "public",
+    "utc_zone": "America/New_York"
+  },
+  "layout": null
+}

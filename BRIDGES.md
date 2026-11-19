@@ -10,8 +10,8 @@ and says how old the information is.
    socket is a request in your handoff file, not an edit.
 
 ## Lanes
-BD   run.py · sim.py · vision.py · labels.py · pklot_cameras.py · cameras/ · campus.json · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py · parkfind/claims.py · parkfind/reports.py · parkfind/demo.py · parkfind/forecast.py · parkfind/confirmations.py · Useful.docx
-DI   parkfind/lastseen.py · parkfind/server.py · tests/
+BD   run.py · sim.py · vision.py · labels.py · pklot_cameras.py · cameras/ · campus.json · parkfind/event.py · parkfind/clock.py · parkfind/guidance.py · parkfind/claims.py · parkfind/reports.py · parkfind/demo.py · parkfind/forecast.py · parkfind/confirmations.py · Useful.docx · tools/geo_export.py · sites/
+DI   parkfind/lastseen.py · parkfind/server.py · tests/ · parkfind/sites_standin.py (stand-in written by BD for the demo; DI replaces it)
 DK   WebPage.java
 
 Logic vs wiring (agreed 2026-10-19): BD writes the logic (a function in a BD module that decides,

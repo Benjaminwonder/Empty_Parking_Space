@@ -539,3 +539,21 @@ Only BD writes here. Newest entry at the bottom. Format: see BRIDGES.md.
   also: SK-CLAIM row had unescaped "regular|ada|ev" that split the table; escaped.
   waiting: DI and DK read the three rows and agree or ask in handoff/DI.md / handoff/DK.md.
 
+2026-11-09 · S1 for the demo (branch s1-bd; DK away, so BD's lane built DK's S1 screen too)
+  S1-BD-1 (partly): tools/geo_export.py converts the drawing to lat/lng (GEO affine + flat-Earth step, same
+           constants as WebPage) and writes sites/stetson/site.json: card (SK-SITE draft) + campus.json content +
+           per lot outline and centre. Outlines are the WebPage pin boxes, marked outline_source "approximate,
+           to be traced" (OpenStreetMap refused automated reads). Checks: Main Gate inside the site outline;
+           every lot centre inside its lot and the site (ray casting).
+  sites/test2, test3, test4: cards only, coming_soon (generic test names, no real business).
+  stand-in for DI: parkfind/sites_standin.py + two routes in server.py: GET /sites (cards only, a broken
+           file is skipped and named) and GET /sites/<id>/package (lot outlines; id checked before any path).
+  for DK (WebPage): the front door. Leaflet 1.9.4 from unpkg pinned by SRI hash; site list nearest first
+           (haversine), "you're here" by ray casting, 5 km suggestions, search, coming_soon greyed and not
+           tappable, live count from the pins' own verdicts, Stetson's lots drawn on the open map. Tap opens
+           Parkview; maybeOpenNearest waits until then. "All sites" button goes back. Location stays in the page.
+  checked (headless Chromium, Java 21): at Stetson desk + phone: recommends Stetson, tap opens Sage's window
+           as before, back works; far away: none within 5 km, search finds them; no location: all listed,
+           no recommendation; no console errors; /sites/test2/package and "../" ids answer 404.
+  open: trace real lot outlines; DI replaces the stand-in; DK reviews the front door on return.
+
